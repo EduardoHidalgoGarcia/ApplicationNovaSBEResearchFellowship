@@ -1,0 +1,534 @@
+---
+title: "Analisis de Script Pelicula Magnolia"
+author: "Bernardo Garcia & Eduardo Hidalgo"
+date: "May 9, 2018"
+output: 
+  html_document:
+    df_print: paged
+    highlight: tango
+    theme: lumen
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+library(readr)
+library(tidytext)
+library(dplyr)
+library(scales)
+require(data.table)
+require(knitr)
+library(tidygraph)
+library(ggraph)
+library(tidyr)
+
+
+
+
+extract.alpha <- function(x, space = ""){      
+  require(stringr)
+  require(purrr)
+  require(magrittr)
+  
+  y <- strsplit(unlist(x), "[^a-zA-Z]+") 
+  z <- y %>% map(~paste(., collapse = space)) %>% simplify()
+  return(z)}
+
+
+agregar_hyperlift <- function(reglas, trans){
+  quality(reglas) <- cbind(quality(reglas), 
+	hyper_lift = interestMeasure(reglas, measure = "hyperLift", 
+	transactions = trans))
+  reglas
+}
+
+setwd("~/ma/ma_final/magnolia")
+Texo <- read_csv("Magnolia.csv")
+
+
+
+
+
+normalizar <- function(texto, vocab = NULL){
+  texto <- gsub("\\.\\s*$", "  _ss_", texto)
+  texto <- tolower(texto)
+  texto <- gsub("\\s+", " ", texto)
+  texto <- gsub("\\.[^0-9]", " _ss_ _s_ ", texto)
+  texto <- gsub("[«»]", "", texto) 
+  texto <- gsub(";", " _punto_coma_ ", texto) 
+  texto <- gsub("\\:", " _dos_puntos_ ", texto) 
+  texto <- gsub("\\,[^0-9]", " _coma_ ", texto) 
+  texto <- paste("_s_ _s_", texto)
+  texto
+}
+restringir_vocab <- function(texto, vocab = vocab){
+  texto_v <- strsplit(texto, " ")
+  texto_v <- lapply(texto_v, function(x){
+    en_vocab <- x %in% vocab
+    x[!en_vocab] <- "_unk_"
+    x
+  })
+  texto <- sapply(texto_v, function(x){
+      paste(x, collapse = " ")
+  })
+  texto
+}
+
+aux <- data_frame(txt = as.character(Texo%>%select(dialogue))) %>%
+                mutate(id = row_number()) %>%
+                mutate(txt = normalizar(txt)) 
+unigrams_aux <- aux %>% 
+                   unnest_tokens(word, txt, token = "ngrams", 
+                                 n = 1) %>%
+                   group_by(word) %>% tally()
+
+
+Titulo<-Texo[1,]%>%select(char)%>%as.character()
+Titulo<-extract.alpha(Titulo, space = " ")%>%as.data.frame()
+strTitulo<-Titulo$.%>%as.character()
+
+
+aux<-paste0(strTitulo,"_rules.csv")
+Market_Basket_Text<-read_csv(aux)
+aux<-paste0(strTitulo,"_finalcharacters.csv")
+finalcharacters <- read_csv(aux, col_names = FALSE)
+aux<-paste0(strTitulo,"_finalcouples.csv")
+finalcouples <- read_csv(aux, col_names = FALSE)
+aux<-paste0(strTitulo,"_sentiment_overtime_individual.csv")
+sentiment_overtime_individual <- read_csv(aux, 
+    col_names = c("Personaje","Time_in_Movie","Polaridad"))
+aux<-paste0(strTitulo,"_sentiment_overtime_individualminsmaxs.csv")
+sentiment_overtime_individualminsmaxs <- read_delim(aux, 
+    "|", escape_double = FALSE, col_names = c("Personaje","Min_Max","Dialogo"), 
+    trim_ws = TRUE)
+aux<-paste0(strTitulo,"_sentiment_overtime_couples.csv")
+sentiment_overtime_couples <- read_csv(aux, 
+    col_names = c("Parejas","Time_in_Movie","Polaridad"))
+aux<-paste0(strTitulo,"_sentiment_overtime_couplesminsmaxs.csv")
+sentiment_overtime_couplesminsmaxs <- read_delim(aux, 
+    "|", escape_double = FALSE, col_names = c("Parejas","Min_Max","Dialogo"), 
+    trim_ws = TRUE)
+setwd("~/ma/ma_final/Reportes")
+#source("00.- Functions.R")
+```
+
+# Agenda {.tabset .tabset-fade .tabset-pills}
+
++ Procesamiento
++ Analisis de Sentimiento
+    + Score por Pelicula
+    + Score por Personaje
+    + Score por Personaje en el tiempo
+        + Top 10 Personajes
+        + Top 4 Parejas
++ Reglas de Asociación entre palabras (Market Basket)
+    + Toda la pelicula
+    + Top 10 Personajes
+    + Top 4 Parejas
++ Analisis de Relaciones entre Personajes (Pagerank)
++ Conclusiones
+
+## Procesamiento de Texto
+
+### Ver archivo Python
+
+```{r showChoro1,echo=FALSE}
+htmltools::includeHTML("Python.html")
+```
+
+
+## Analisis de Sentimiento (Pelicula & Personaje)
+
+### Score por Pelicula
+
+
+```{r, echo=FALSE}
+knitr::kable(Titulo,caption = "Titulo",align=c('c'))
+```
+
+
+
+
+
+```{r, echo=FALSE}
+TotalWords <-as.double(unigrams_aux%>%group_by()%>%summarise(`Palabras Distintas`=n_distinct(word)))
+knitr::kable(unigrams_aux%>%group_by()%>%summarise(`Palabras Distintas`=n_distinct(word)),caption ="Numero de Palabras/Tokens en el texto original")
+#print(paste0("Palabras Unicas texto original: ", as.double(unigrams_aux%>%group_by()%>%summarise(aux=n_distinct(word)))))
+```
+
+
+```{r, echo=FALSE, warning=FALSE,include=FALSE}
+a<-inner_join(unigrams_aux,get_sentiments("afinn"))
+b<-inner_join(unigrams_aux,get_sentiments("bing"))
+c<-inner_join(unigrams_aux,get_sentiments("nrc"))
+d<-inner_join(unigrams_aux,get_sentiments("loughran"))
+
+
+#e<-inner_join(bigrams_ejemplo_2,get_sentiments("afinn"))
+#f<-inner_join(bigrams_ejemplo_2,get_sentiments("bing"))
+#g<-inner_join(bigrams_ejemplo_2,get_sentiments("nrc"))
+#h<-inner_join(bigrams_ejemplo_2,get_sentiments("loughran"))
+
+```
+
+
+
+
+
+
+
+
+```{r afinn_dict, echo=FALSE}
+
+UniqueWordsFounded<-as.double(a%>%group_by()%>%summarise(aux=n_distinct(word)))
+a$Porcentaje<-a$n/as.double(a%>%group_by()%>%summarise(aux=sum(n)))
+knitr::kable(a%>%group_by()%>%summarise(Score=crossprod(a$score,a$Porcentaje)+5,Descripcion="Entre 0 (negativo) y 10 (positivo)",`% Founded Words`=percent(UniqueWordsFounded/TotalWords))%>%select(Descripcion,Score,`% Founded Words`),caption ="Escala de Sentimientos entre negativos y positivos: afinn",align = c('l','c','r'))
+```
+
+
+
+
+```{r bing_dict, echo=FALSE}
+UniqueWordsFounded<-as.double(b%>%group_by()%>%summarise(aux=n_distinct(word)))
+b$Porcentaje<-b$n/as.double(b%>%group_by()%>%summarise(aux=sum(n)))
+script<-paste0("Porcentaje de Palabras encontradas por tipo de sentimiento (bing) ", percent(UniqueWordsFounded/TotalWords))
+knitr::kable(b%>%group_by(sentiment)%>%summarise(Porcentaje=sum(Porcentaje))%>%arrange(desc(Porcentaje))%>%mutate(Porcentaje=percent(Porcentaje))%>%select(sentiment,Porcentaje),caption =script,align = c('l','c','r'))
+```
+
+
+
+
+```{r nrc_dict,echo=FALSE}
+UniqueWordsFounded<-as.double(c%>%group_by()%>%summarise(aux=n_distinct(word)))
+c$Porcentaje<-c$n/as.double(c%>%group_by()%>%summarise(aux=sum(n)))
+script<-paste0("Porcentaje de Palabras encontradas por tipo de sentimiento (nrc) ", percent(UniqueWordsFounded/TotalWords))
+knitr::kable(c%>%group_by(sentiment)%>%summarise(Porcentaje=sum(Porcentaje))%>%arrange(desc(Porcentaje))%>%mutate(Porcentaje=percent(Porcentaje))%>%select(sentiment,Porcentaje),caption =script,align = c('l','c'))
+
+```
+
+
+
+
+```{r loughran_dict,echo=FALSE}
+UniqueWordsFounded<-as.double(d%>%group_by()%>%summarise(aux=n_distinct(word)))
+d$Porcentaje<-d$n/as.double(d%>%group_by()%>%summarise(aux=sum(n)))
+script<-paste0("Porcentaje de Palabras encontradas por tipo de sentimiento (loughran) ", percent(UniqueWordsFounded/TotalWords))
+knitr::kable(d%>%group_by(sentiment)%>%summarise(Porcentaje=sum(Porcentaje))%>%arrange(desc(Porcentaje))%>%mutate(Porcentaje=percent(Porcentaje))%>%select(sentiment,Porcentaje),caption =script,align = c('l','c'))
+
+```
+
+
+### Score por Personaje
+
+```{r,echo=FALSE}
+characters<-Texo%>%group_by(char)%>%summarise(Dialogues=n())%>%filter(Dialogues>=10)%>%arrange(desc(Dialogues))
+Texo_characters<-Texo%>%inner_join(characters%>%select(char))
+```
+
+
+
+
+
+
+
+
+```{r characters, echo=FALSE,results='asis'}
+personajes<-characters%>%select(char)%>%summarise(n())%>%as.double()
+strpersonajes<-as.list(characters%>%select(char)) %>%flatten()
+n=0
+for(i in strpersonajes){
+  n=n+1
+  script<-paste0("Analisis de Sentimientos del Personaje: ", i)
+  print(script)
+  tmp<-Texo%>%filter(char==i)
+  aux <- data_frame(txt = as.character(tmp%>%select(dialogue))) %>%
+                mutate(id = row_number()) %>%
+                mutate(txt = normalizar(txt)) 
+  unigrams_aux <- aux %>% 
+                   unnest_tokens(word, txt, token = "ngrams", 
+                                 n = 1) %>%
+                   group_by(word) %>% tally()
+  TotalWords <-as.double(unigrams_aux%>%group_by()%>%summarise(`Palabras Distintas`=n_distinct(word)))
+  script<-paste0("Numero total de Palabras Unicas en el texto: ",TotalWords)
+  print(script)
+    for(a in c("afinn","bing","nrc","loughran")){
+      temp1<-inner_join(unigrams_aux,get_sentiments(a))
+      if(a=="afinn"){
+        UniqueWordsFounded<-as.double(temp1%>%group_by()%>%summarise(aux=n_distinct(word)))
+        temp1$Porcentaje<-temp1$n/as.double(temp1%>%group_by()%>%summarise(aux=sum(n)))
+        print(knitr::kable(temp1%>%group_by()%>%summarise(Score=crossprod(temp1$score,temp1$Porcentaje)+5,Descripcion="Entre 0 (negativo) y 10 (positivo)",`% Founded Words`=percent(UniqueWordsFounded/TotalWords))%>%select(Descripcion,Score,`% Founded Words`),caption ="Escala de Sentimientos entre negativos y positivos: afinn",align = c('l','c','r')))
+        cat('\n')
+      }else{
+      UniqueWordsFounded<-as.double(temp1%>%group_by()%>%summarise(aux=n_distinct(word)))
+      temp1$Porcentaje<-temp1$n/as.double(temp1%>%group_by()%>%summarise(aux=sum(n)))
+      script<-paste0("Porcentaje de Palabras encontradas por tipo de sentimiento ( ",a," ) ", percent(UniqueWordsFounded/TotalWords))
+      print(knitr::kable(temp1%>%group_by(sentiment)%>%summarise(Porcentaje=sum(Porcentaje))%>%arrange(desc(Porcentaje))%>%mutate(Porcentaje=percent(Porcentaje))%>%select(sentiment,Porcentaje),caption =script,align = c('l','c'))) 
+      cat('\n')
+      cat('\n')
+      cat('\n')
+      }
+    
+  }
+}
+
+
+
+```
+
+## Score por Personaje en el tiempo
+
+### Top 10 Personajes
+
+```{r, echo=FALSE}
+p<-ggplot(data=sentiment_overtime_individual)+geom_line(mapping=aes(x=Time_in_Movie,y=Polaridad),color="Red",stat="summary",fun.y="mean")
+p+scale_y_continuous(labels = scales::comma)+scale_x_continuous(labels = scales::comma)+facet_wrap(~Personaje,nrow=3,scales = "free")+ ggtitle(expression(atop("Promedio de Sentiment Score en el tiempo", atop(italic("Top 10 Personajes"), ""))))
+
+```
+
+
+```{r,echo=FALSE}
+aux<-paste("Dialogos cúspide por Top 10 Personajes: ",strTitulo)
+knitr::kable(sentiment_overtime_individualminsmaxs, caption = aux,align = c("l","c","l"))
+```
+
+
+### Top 4 Parejas
+
+```{r,echo=FALSE}
+p<-ggplot(data=sentiment_overtime_couples)+geom_line(mapping=aes(x=Time_in_Movie,y=Polaridad),color="Red",stat="summary",fun.y="mean")
+p+scale_y_continuous(labels = scales::comma)+scale_x_continuous(labels = scales::comma)+facet_wrap(~Parejas,nrow=3,scales = "free")+ ggtitle(expression(atop("Promedio de Sentiment Score en el tiempo", atop(italic("Top 4 Parejas"), ""))))
+
+```
+
+
+```{r,echo=FALSE}
+aux<-paste("Dialogos cúspide por Top 4 Parejas: ",strTitulo)
+knitr::kable(sentiment_overtime_couplesminsmaxs, caption = aux,align = c("l","c","l"))
+```
+
+
+
+## Reglas de Asociación entre palabras (Market Basket)
+
+
+### Toda la pelicula 
+
+
+```{r ProcesamientoPeli, warning = FALSE,echo=FALSE}
+Market_Basket_Text$Aux<-nchar(Market_Basket_Text$antecedants)
+Market_Basket_Text$Aux1<-nchar(Market_Basket_Text$consequents)
+Market_Basket_Text$from<-substr(Market_Basket_Text$antecedants,12,Market_Basket_Text$Aux-2)
+Market_Basket_Text$to<-substr(Market_Basket_Text$consequents,12,Market_Basket_Text$Aux1-2)%>%as.factor()
+Market_Basket_Text<-Market_Basket_Text%>%select(from,to,support,confidence,`antecedent support`,`consequent support`,lift,leverage,conviction,one_lower,both_lower)
+
+```
+
+
+```{r, TodaLaPeliLift, warning = FALSE,echo=FALSE}
+mean_lift<-mean(Market_Basket_Text$lift)
+sd_lift<-sd(Market_Basket_Text$lift)
+sd_leverage<-sd(Market_Basket_Text$leverage)
+quantiles_lift<-quantile(Market_Basket_Text$lift,c(0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1))
+Aux<-paste0("Lift Promedio de las Reglas de Asociacion: ",mean_lift)
+print(Aux)
+Aux<-paste0("Desviación estandar del Lift de las Reglas de Asociacion: ",sd_lift)
+print(Aux)
+Aux<-paste0("Deciles del Lift : ")
+print(Aux)
+quantiles_lift
+
+
+
+```
+
+
+```{r LiftHistTodaPeli,echo=FALSE}
+aux<-Titulo$.%>%as.character()
+aux1<-paste0("Histograma de valores del Lift para la pelicula : ",aux)
+a<-ggplot(Market_Basket_Text,aes(lift))+geom_histogram(fill='Red',color='Black')
+a+scale_y_continuous(labels = scales::comma)+scale_x_continuous(labels = scales::comma)+ ggtitle(aux1)
+
+```
+
+
+```{r LiftDataTodaPeli,echo=FALSE}
+pg<-ggplot_build(a)
+Resumen_Lift<-as.data.frame(head(pg$data[[1]]))
+Aux<-Resumen_Lift%>%select(y,x,xmin,xmax)
+Aux$y<-prettyNum(Aux$y,big.mark=",",scientific=FALSE,digits=0)
+Aux$xmin<-prettyNum(Aux$xmin,big.mark=",",scientific=FALSE,digits=0)
+Aux$xmax<-prettyNum(Aux$xmax,big.mark=",",scientific=FALSE,digits=0)
+Aux$x<-prettyNum(Aux$x,big.mark=",",scientific=FALSE,digits=0)
+names(Aux)[names(Aux) == 'y'] <- 'Numero de Dialogos'
+names(Aux)[names(Aux) == 'x'] <- 'Lift'
+names(Aux)[names(Aux) == 'xmin'] <- 'Lift Minimo'
+names(Aux)[names(Aux) == 'xmax'] <- 'Lift Maximo'
+aux1<-paste0("Datos del Histograma: Lift Pelicula: ",aux)
+knitr::kable(Aux[,c(1,3,4)], caption = aux1, align = c('c','r','r'))
+```
+
+```{r, TodaLaPeliLeverage, warning = FALSE,echo=FALSE}
+mean_leverage<-mean(Market_Basket_Text$leverage)
+sd_leverage<-sd(Market_Basket_Text$leverage)
+quantiles_leverage<-quantile(Market_Basket_Text$leverage,c(0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1))
+Aux<-paste0("Leverage Promedio de las Reglas de Asociacion: ",mean_leverage)
+print(Aux)
+Aux<-paste0("Desviación estandar del Leverage de las Reglas de Asociacion: ",sd_leverage)
+print(Aux)
+Aux<-paste0("Deciles del Leverage : ")
+print(Aux)
+quantiles_leverage
+
+
+
+```
+
+```{r LeverageHistTodaPeli,echo=FALSE}
+aux1<-paste0("Histograma de valores del Leverage pelicula: ",aux)
+a<-ggplot(Market_Basket_Text,aes(leverage))+geom_histogram(fill='Red',color='Black')
+a+scale_y_continuous(labels = scales::comma)+scale_x_continuous(labels = scales::comma)+ ggtitle(aux1)
+
+```
+
+
+```{r LeverageDataTodaPeli,echo=FALSE}
+pg<-ggplot_build(a)
+Resumen_Leverage<-as.data.frame(head(pg$data[[1]]))
+Aux<-Resumen_Leverage%>%select(y,x,xmin,xmax)
+Aux$y<-prettyNum(Aux$y,big.mark=",",scientific=FALSE,digits=0)
+Aux$xmin<-prettyNum(Aux$xmin,big.mark=",",scientific=FALSE,digits=2)
+Aux$xmax<-prettyNum(Aux$xmax,big.mark=",",scientific=FALSE,digits=2)
+Aux$x<-prettyNum(Aux$x,big.mark=",",scientific=FALSE,digits=2)
+names(Aux)[names(Aux) == 'y'] <- 'Numero de Dialogos'
+names(Aux)[names(Aux) == 'x'] <- 'Leverage'
+names(Aux)[names(Aux) == 'xmin'] <- 'Leverage Minimo'
+names(Aux)[names(Aux) == 'xmax'] <- 'Leverage Maximo'
+aux1<-paste0("Datos del Histograma: Leverage pelicula: ",aux)
+knitr::kable(Aux[,c(1,3,4)], caption = aux1, align = c('c','r','r'))
+```
+
+
+```{r AnalisisSerieTodasPalabrasPeli,run-numeric-md, fig.width=10, fig.height=8, warning = FALSE,echo=FALSE}
+df_reglas<-Market_Basket_Text%>%filter(both_lower==1)
+quantiles_lift<-quantile(df_reglas$lift,c(.75))%>%as.double()
+lift_max<-max(df_reglas$lift)
+mean_lift<-mean(df_reglas$lift)
+sd_lift<-sd(df_reglas$lift)
+quantiles_leverage<-quantile(df_reglas$leverage,c(.75))%>%as.double()
+leverage_max<-max(df_reglas$leverage)
+mean_leverage<-mean(df_reglas$leverage)
+sd_leverage<-sd(df_reglas$leverage)
+df_reglas<-df_reglas%>%filter(lift>=quantiles_lift & leverage>=quantiles_leverage)
+df_reglas$from<-df_reglas$from%>%as.factor()    
+df_reglas$weight <- log(df_reglas$conviction)
+graph_1 <- as_tbl_graph(df_reglas) %>%
+mutate(centrality = centrality_degree(mode = "all")) 
+aux<-paste0("Reglas de Asociación en palabras de la pelicula: ",strTitulo)
+ggraph(graph_1, layout = 'fr', start.temp=100) +
+      geom_edge_link(aes(alpha=lift), 
+                     colour = 'red',
+                     arrow = arrow(length = unit(4, 'mm'))) + 
+      geom_node_point(aes(size = centrality, colour = centrality)) + 
+      geom_node_text(aes(label = name), size=4,
+                     colour = 'gray20', repel=TRUE) +
+      theme_graph()+ggtitle(aux)
+
+
+```
+
+
+### Top 10 Personajes
+
+```{r AnalisisSeriePersonajesTop,run-numeric-md, fig.width=10, fig.height=8, warning = FALSE,echo=FALSE}
+top_characters<-finalcharacters
+top_characters$chars<-paste0("'INSCENE_",top_characters$X1,"'")
+top_10_characters<-top_characters$chars%>%as.list()
+for(i in top_10_characters){
+    df_reglas<-Market_Basket_Text%>%filter(one_lower==1 & (from==i))
+    lift_max<-max(df_reglas$lift)
+    mean_lift<-mean(df_reglas$lift)
+    sd_lift<-sd(df_reglas$lift)
+    leverage_max<-max(df_reglas$leverage)
+    mean_leverage<-mean(df_reglas$leverage)
+    sd_leverage<-sd(df_reglas$leverage)
+    aux<-paste0("df_reglas_",i)
+    aux1<-paste0("Reglas Asociacion del personaje: ",i)
+    df_reglas<-df_reglas%>%filter(lift>=mean_lift & leverage>=mean_leverage)
+    df_reglas$from<-df_reglas$from%>%as.factor()
+#df_reglas <- reglas_f %>% DATAFRAME %>% rename(from=LHS, to=RHS) %>% as_data_frame
+    df_reglas$weight <- log(df_reglas$conviction)
+    graph_1 <- as_tbl_graph(df_reglas) %>%
+      mutate(centrality = centrality_degree(mode = "all")) 
+    
+    print(ggraph(graph_1, layout = 'fr', start.temp=100) +
+      geom_edge_link(aes(alpha=lift), 
+                     colour = 'red',
+                     arrow = arrow(length = unit(4, 'mm'))) + 
+      geom_node_point(aes(size = centrality, colour = centrality)) + 
+      geom_node_text(aes(label = name), size=4,
+                     colour = 'gray20', repel=TRUE) +
+      theme_graph()+ggtitle(aux1))
+}
+```
+
+### Top 4 Parejas
+
+```{r AnalisisSerieParejas,run-numeric-md, fig.width=10, fig.height=8, warning = FALSE,echo=FALSE}
+top_characters<-separate(finalcouples,X1,sep="_",into=c("Personaje1","Personaje2"))
+top_characters$chars1<-paste0("'INSCENE_",top_characters$Personaje1,"'")
+top_10_characters1<-top_characters$chars1%>%as.list()
+top_characters$chars2<-paste0("'INSCENE_",top_characters$Personaje2,"'")
+top_10_characters2<-top_characters$chars2%>%as.list()
+renglones<-nrow(top_characters)
+n=0
+for(i in top_10_characters1){
+  n=n+1
+  j=top_10_characters2[n]
+  df_reglas<-Market_Basket_Text%>%filter(one_lower==1 & (from==i | from == j ))
+  lift_max<-max(df_reglas$lift)
+  mean_lift<-mean(df_reglas$lift)
+  sd_lift<-sd(df_reglas$lift)
+  leverage_max<-max(df_reglas$leverage)
+  mean_leverage<-mean(df_reglas$leverage)
+  sd_leverage<-sd(df_reglas$leverage)
+  aux<-paste0("df_reglas_",i,"con_",j)
+  aux1<-paste0("Reglas Asociacion: ",i," con ",j)
+  df_reglas<-df_reglas%>%filter(lift>=mean_lift & leverage>=mean_leverage)
+  df_reglas$from<-df_reglas$from%>%as.factor()
+#df_reglas <- reglas_f %>% DATAFRAME %>% rename(from=LHS, to=RHS) %>% as_data_frame
+  df_reglas$weight <- log(df_reglas$conviction)
+  graph_1 <- as_tbl_graph(df_reglas) %>%
+  mutate(centrality = centrality_degree(mode = "all")) 
+    
+  print(ggraph(graph_1, layout = 'fr', start.temp=100) +
+      geom_edge_link(aes(alpha=lift), 
+                     colour = 'red',
+                     arrow = arrow(length = unit(4, 'mm'))) + 
+      geom_node_point(aes(size = centrality, colour = centrality)) + 
+      geom_node_text(aes(label = name), size=4,
+                     colour = 'gray20', repel=TRUE) +
+      theme_graph()+ggtitle(aux1))
+}
+```
+
+
+
+
+
+
+
+
+
+## Analisis de Relaciones entre Personajes (Pagerank)
+
+
+
+![Pagerank: Magnolia.](magnolia.png)
+
+
+
+
+
+
+
+

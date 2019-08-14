@@ -1,0 +1,742 @@
+---
+title: "Examen Parcial Metodos Analiticos"
+author: "Eduardo Hidalgo & Bernardo Garcia"
+date: "Marzo 2018"
+output: 
+  html_document:
+    df_print: paged
+    highlight: tango
+    theme: lumen
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(data.table)
+#install.packages("gmodels")
+#library(formattable)
+library(knitr)
+#install.packages("haven")
+library(haven)
+library(readr)
+library(ggplot2)
+library(stringr)
+library(dplyr)
+library(tidyr)
+library(gridExtra)
+#install.packages("gmodels")
+#install.packages("caret")
+library(caret)
+library(gmodels)
+#setwd("~/ma/ExamenParcialMA")
+j=0
+
+
+```
+![](itam_logo.png)
+
+## Ejercicios  {.tabset .tabset-fade .tabset-pills}
+
++ 1: Correos de Enron
+
++ 2: Recomendaciones de Peliculas
+
+
+
+### Correos de Enron
+
+```{r initialsetup}
+setwd("~/ma/ml-20m")
+enronwords <- read.table(
+  "docword.enron.txt",
+  sep=" ", header=FALSE, skip = 3, col.names = c("DocId", "WordId", "Appereances"))
+
+vocabs <- read.table(
+  "https://archive.ics.uci.edu/ml/machine-learning-databases/bag-of-words/vocab.enron.txt",
+  sep=" ", header=FALSE, skip = 0, col.names = c("Word"))
+
+vocabs <- vocabs %>% mutate(WordCode = 1:nrow(vocabs))
+head(vocabs)
+
+numberofwords=max(enronwords$WordId)
+
+minprime=28109 #Min prime largest than number of words
+
+set.seed(5676)
+firmas_matrix <- enronwords %>% select("DocId") %>% group_by(DocId) %>% filter(row_number(DocId) <= 1)
+
+```
+En la sección anterior generamos una matriz de firmas vacía. En la próxima hacemos 16 funciones minhash (tomando la recomendación de Ullman) que no colisionan. Los hashes producidos por cada una se incluyen en la matriz de firmas.
+```{r}
+for (x in 1:16){
+  randomcoefs <- sample.int(minprime - 1, 2)
+  
+  minhashullman <- function(x, randomcoefs, minprime){
+    return(((x-1)*randomcoefs[1]+randomcoefs[2]) %% minprime+1)
+  }
+  
+  
+  tempenr<- enronwords %>% mutate(hash=minhashullman(WordId, randomcoefs, minprime)) %>% mutate(minhash=min(hash))
+  
+  tempenr <- left_join(tempenr,
+                       tempenr %>%
+                         group_by(DocId) %>%
+                         summarise(minhash=min(hash)), by='DocId')
+  
+  tempenr <- tempenr %>% group_by(DocId) %>% filter(row_number(DocId) <= 1)
+  tempenr <- tempenr %>% select(c('DocId', 'minhash.y'))
+  names(tempenr)= c('DocId', paste('hash', x, sep="_"))
+  firmas_matrix <- left_join(tempenr,firmas_matrix, by='DocId')
+  
+}
+
+hashes=c()
+for (x in 1:16){
+  hashes=c(hashes, paste("hash", x, sep="_"))
+}
+```
+Ahora creamos una matriz temporal donde agregamos la variable similitud900, que guardará el porcentaje de hashes de cada fila que coincidan con 900. 
+```{r}
+
+firmas_matrix_temp <- firmas_matrix %>% mutate(similitud900=0)
+
+for (hash in hashes){
+  hash900 <- firmas_matrix %>% filter(DocId==900)
+  hach=hash900[1, hash]
+  hach=as.integer(hach)
+  firmas_matrix_temp$similitud900=firmas_matrix_temp$similitud900+as.integer(firmas_matrix_temp[hash]==hach)/16.00
+}
+```
+Ahora filtramos los resultados con similitud aproximada mayor a .5
+```{r}
+most_similar_emails<- firmas_matrix_temp %>% filter(similitud900>=.5 & DocId!=900)
+
+most_similar_emails <- most_similar_emails$DocId
+
+words900 <- enronwords %>% filter(DocId==900) %>% select(WordId)
+words900 <- as.list(words900)
+
+aux2=c()
+```
+Para cada correo seleccionado, encontraremos la matriz de jaccard y las palabras que tienen en común.
+```{r}
+
+for(mail in most_similar_emails){
+  words <- enronwords %>% filter(DocId==mail) %>% select(WordId)
+  words <- as.list(words)
+  int=intersect(unlist(words), unlist(words900))
+  uni=union(unlist(words), unlist(words900))
+  jac=as.double(as.double(length(int))/(as.double(length(uni))))
+  #print(paste("Con el correo número", mail, "la similaridad es", round(jac*100)/100, "=", length(int), "/", length(uni)))
+  sharedwords <- vocabs %>% filter(WordCode %in% int) %>% select(Word)
+  sharedwords <- as.list(sharedwords)
+  #print("Las palabras compartidas son:")
+  #print(paste(unlist(sharedwords), collapse=", "))
+  a0<-mail
+  a1<-length(int)
+  a2<-length(uni)
+  a3<-jac
+  a4<-paste(unlist(sharedwords), collapse=", ")
+  aux<- cbind(a0, a1, a2, a3, a4)
+  aux2<-rbind(aux2, aux)
+}
+
+similar_texts=as.data.frame(aux2)
+names(similar_texts)<-c("Núm. de correo", "Intersección", "Unión", "Similitud de Jac.", "Palabras en común")
+title="Similitudes de Jaccard para el correo 900"
+DT::datatable(similar_texts,caption = title)
+```
+En la  tabla se muestra la  similitud de jaccard de cada documento preseleccionado con el documento 900. 
+```{r}
+firmas_matrix_temp <- firmas_matrix %>% mutate(similitud900=0)
+
+buckets=c()
+for (x in 1:8){
+  y=x*2
+  z=x*2-1
+  col1= paste("hash", z, sep="_")
+  col2= paste("hash", y, sep="_")
+  col3=paste("bucket", x, sep="_")
+  buckets=c(buckets, col3)
+  firmas_matrix_temp[col3]=firmas_matrix_temp[col1]*minprime+firmas_matrix_temp[col2]
+}
+```
+Ahora creamos una cubeta combinando pares de hashes. Por simplicidad, la cubeta es el primer hash multiplicado por el número primo que usamos antes para hacer las funciones minhash, más el segundo minhash. Se puede comprobar que no habrá colisiones entre cubetas. 
+```{r}
+
+buckets=c()
+for (x in 1:8){
+  buckets=c(buckets, paste("bucket", x, sep="_"))
+}
+
+#for(doc in c(100, 105, 1400)){
+doc=100  
+  firmas_matrix_temp2 <- firmas_matrix_temp %>% mutate(similitud=0)
+  for (bucket in buckets){
+    buck <- firmas_matrix_temp2 %>% filter(DocId==doc)
+    buck=buck[1, bucket]
+    buck=as.integer(buck)
+    firmas_matrix_temp2$similitud=firmas_matrix_temp2$similitud+as.integer(firmas_matrix_temp2[bucket]==buck)/8.00
+  }
+  firmas_matrix_temp2<- arrange(firmas_matrix_temp2, desc(similitud))[2:21, ]
+  
+  most_similar_emails <- firmas_matrix_temp2$DocId
+  
+  wordsor <- enronwords %>% filter(DocId==doc) %>% select(WordId)
+  wordsor <- as.list(wordsor)
+  
+  auxwords2<-c()
+  for(word in wordsor){
+    aw0<-word
+    aw1<-1
+    auxwords<-cbind(aw0,aw1)
+    auxwords2<-rbind(auxwords)
+  }
+  
+  add <- function(auxwords2, word){
+    flag=0
+    i=1
+    for(worde in auxwords2[,1]){
+      if(worde==word){
+        auxwords2[i,2]=auxwords2[i,2]+1
+        flag=1
+      }
+      i=i+1
+    }
+    if(flag==0){
+      aw0<-word
+      aw1<-1
+      auxwords<-cbind(aw0,aw1)
+      auxwords2<-rbind(auxwords2, auxwords)
+    }
+    return(auxwords2)
+  }
+  
+  
+  aux2=c()
+  for(mail in most_similar_emails){
+    words <- enronwords %>% filter(DocId==mail) %>% select(WordId)
+    words <- as.list(words)
+    for(word in unlist(words)){
+      auxwords2<-add( auxwords2, word)
+    }
+    int=intersect(unlist(words), unlist(wordsor))
+    uni=union(unlist(words), unlist(wordsor))
+    jac=as.double(as.double(length(int))/(as.double(length(uni))))
+    #print(paste("Con el correo número", mail, "la similaridad es", round(jac*100)/100, "=", length(int), "/", length(uni)))
+    sharedwords <- vocabs %>% filter(WordCode %in% int) %>% select(Word)
+    sharedwords <- as.list(sharedwords)
+    #print("Las palabras compartidas son:")
+    #print(paste(unlist(sharedwords), collapse=", "))
+    a0<-mail
+    a1<-length(int)
+    a2<-length(uni)
+    a3<-jac
+    a4<-paste(unlist(sharedwords), collapse=", ")
+    aux<- cbind(a0, a1, a2, a3, a4)
+    aux2<-rbind(aux2, aux)
+  }
+  
+  similar_texts=as.data.frame(aux2)
+  names(similar_texts)<-c("Núm. de correo", "Intersección", "Unión", "Similitud de Jac.", "Palabras en común")
+  
+  common_words=as.data.frame(auxwords2)
+  common_words <- arrange(common_words, desc(aw1))
+  names(common_words) <- c("WordCode", "Number of documents")
+  common_words2<- left_join(common_words, vocabs, by="WordCode")
+  common_words2 <-common_words2 %>% select("Word", "Number of documents")
+  title=paste("Similitudes de Jaccard para el correo ", doc)
+  DT::datatable(similar_texts,caption = title)
+```
+
+En estas tablas se muestran las similitudes de Jaccard con el top 20 de documentos similares al documento 100, con las palabras en común. Además abajo incluímos para cada grupo de 20 + el documento original, el número de veces que aparecen las palabras más comunes. 
+
+```{r}
+  title=paste("Palabras más comunes en el grupo del correo ", doc)
+  DT::datatable(common_words2,caption = title)
+```
+
+
+
+```{r}
+
+buckets=c()
+for (x in 1:8){
+  buckets=c(buckets, paste("bucket", x, sep="_"))
+}
+
+#for(doc in c(100, 105, 1400)){
+doc=105
+  firmas_matrix_temp2 <- firmas_matrix_temp %>% mutate(similitud=0)
+  for (bucket in buckets){
+    buck <- firmas_matrix_temp2 %>% filter(DocId==doc)
+    buck=buck[1, bucket]
+    buck=as.integer(buck)
+    firmas_matrix_temp2$similitud=firmas_matrix_temp2$similitud+as.integer(firmas_matrix_temp2[bucket]==buck)/8.00
+  }
+  firmas_matrix_temp2<- arrange(firmas_matrix_temp2, desc(similitud))[2:21, ]
+  
+  most_similar_emails <- firmas_matrix_temp2$DocId
+  
+  wordsor <- enronwords %>% filter(DocId==doc) %>% select(WordId)
+  wordsor <- as.list(wordsor)
+  
+  auxwords2<-c()
+  for(word in wordsor){
+    aw0<-word
+    aw1<-1
+    auxwords<-cbind(aw0,aw1)
+    auxwords2<-rbind(auxwords)
+  }
+  
+  add <- function(auxwords2, word){
+    flag=0
+    i=1
+    for(worde in auxwords2[,1]){
+      if(worde==word){
+        auxwords2[i,2]=auxwords2[i,2]+1
+        flag=1
+      }
+      i=i+1
+    }
+    if(flag==0){
+      aw0<-word
+      aw1<-1
+      auxwords<-cbind(aw0,aw1)
+      auxwords2<-rbind(auxwords2, auxwords)
+    }
+    return(auxwords2)
+  }
+  
+  
+  aux2=c()
+  for(mail in most_similar_emails){
+    words <- enronwords %>% filter(DocId==mail) %>% select(WordId)
+    words <- as.list(words)
+    for(word in unlist(words)){
+      auxwords2<-add( auxwords2, word)
+    }
+    int=intersect(unlist(words), unlist(wordsor))
+    uni=union(unlist(words), unlist(wordsor))
+    jac=as.double(as.double(length(int))/(as.double(length(uni))))
+    #print(paste("Con el correo número", mail, "la similaridad es", round(jac*100)/100, "=", length(int), "/", length(uni)))
+    sharedwords <- vocabs %>% filter(WordCode %in% int) %>% select(Word)
+    sharedwords <- as.list(sharedwords)
+    #print("Las palabras compartidas son:")
+    #print(paste(unlist(sharedwords), collapse=", "))
+    a0<-mail
+    a1<-length(int)
+    a2<-length(uni)
+    a3<-jac
+    a4<-paste(unlist(sharedwords), collapse=", ")
+    aux<- cbind(a0, a1, a2, a3, a4)
+    aux2<-rbind(aux2, aux)
+  }
+  
+  similar_texts=as.data.frame(aux2)
+  names(similar_texts)<-c("Núm. de correo", "Intersección", "Unión", "Similitud de Jac.", "Palabras en común")
+  
+  common_words=as.data.frame(auxwords2)
+  common_words <- arrange(common_words, desc(aw1))
+  names(common_words) <- c("WordCode", "Number of documents")
+  common_words2<- left_join(common_words, vocabs, by="WordCode")
+  common_words2 <-common_words2 %>% select("Word", "Number of documents")
+  title=paste("Similitudes de Jaccard para el correo ", doc)
+  DT::datatable(similar_texts,caption = title)
+```
+
+En estas tablas se muestran las similitudes de Jaccard con el top 20 de documentos similares al documento 105, con las palabras en común. Además abajo incluímos para cada grupo de 20 + el documento original, el número de veces que aparecen las palabras más comunes. 
+
+```{r}
+  title=paste("Palabras más comunes en el grupo del correo ", doc)
+  DT::datatable(common_words2,caption = title)
+```
+
+```{r}
+
+buckets=c()
+for (x in 1:8){
+  buckets=c(buckets, paste("bucket", x, sep="_"))
+}
+
+#for(doc in c(100, 105, 1400)){
+doc=1400  
+  firmas_matrix_temp2 <- firmas_matrix_temp %>% mutate(similitud=0)
+  for (bucket in buckets){
+    buck <- firmas_matrix_temp2 %>% filter(DocId==doc)
+    buck=buck[1, bucket]
+    buck=as.integer(buck)
+    firmas_matrix_temp2$similitud=firmas_matrix_temp2$similitud+as.integer(firmas_matrix_temp2[bucket]==buck)/8.00
+  }
+  firmas_matrix_temp2<- arrange(firmas_matrix_temp2, desc(similitud))[2:21, ]
+  
+  most_similar_emails <- firmas_matrix_temp2$DocId
+  
+  wordsor <- enronwords %>% filter(DocId==doc) %>% select(WordId)
+  wordsor <- as.list(wordsor)
+  
+  auxwords2<-c()
+  for(word in wordsor){
+    aw0<-word
+    aw1<-1
+    auxwords<-cbind(aw0,aw1)
+    auxwords2<-rbind(auxwords)
+  }
+  
+  add <- function(auxwords2, word){
+    flag=0
+    i=1
+    for(worde in auxwords2[,1]){
+      if(worde==word){
+        auxwords2[i,2]=auxwords2[i,2]+1
+        flag=1
+      }
+      i=i+1
+    }
+    if(flag==0){
+      aw0<-word
+      aw1<-1
+      auxwords<-cbind(aw0,aw1)
+      auxwords2<-rbind(auxwords2, auxwords)
+    }
+    return(auxwords2)
+  }
+  
+  
+  aux2=c()
+  for(mail in most_similar_emails){
+    words <- enronwords %>% filter(DocId==mail) %>% select(WordId)
+    words <- as.list(words)
+    for(word in unlist(words)){
+      auxwords2<-add( auxwords2, word)
+    }
+    int=intersect(unlist(words), unlist(wordsor))
+    uni=union(unlist(words), unlist(wordsor))
+    jac=as.double(as.double(length(int))/(as.double(length(uni))))
+    #print(paste("Con el correo número", mail, "la similaridad es", round(jac*100)/100, "=", length(int), "/", length(uni)))
+    sharedwords <- vocabs %>% filter(WordCode %in% int) %>% select(Word)
+    sharedwords <- as.list(sharedwords)
+    #print("Las palabras compartidas son:")
+    #print(paste(unlist(sharedwords), collapse=", "))
+    a0<-mail
+    a1<-length(int)
+    a2<-length(uni)
+    a3<-jac
+    a4<-paste(unlist(sharedwords), collapse=", ")
+    aux<- cbind(a0, a1, a2, a3, a4)
+    aux2<-rbind(aux2, aux)
+  }
+  
+  similar_texts=as.data.frame(aux2)
+  names(similar_texts)<-c("Núm. de correo", "Intersección", "Unión", "Similitud de Jac.", "Palabras en común")
+  
+  common_words=as.data.frame(auxwords2)
+  common_words <- arrange(common_words, desc(aw1))
+  names(common_words) <- c("WordCode", "Number of documents")
+  common_words2<- left_join(common_words, vocabs, by="WordCode")
+  common_words2 <-common_words2 %>% select("Word", "Number of documents")
+  title=paste("Similitudes de Jaccard para el correo ", doc)
+  DT::datatable(similar_texts,caption = title)
+```
+
+En estas tablas se muestran las similitudes de Jaccard con el top 20 de documentos similares al documento 1400, con las palabras en común. Además abajo incluímos para cada grupo de 20 + el documento original, el número de veces que aparecen las palabras más comunes. 
+
+```{r}
+  title=paste("Palabras más comunes en el grupo del correo ", doc)
+  DT::datatable(common_words2,caption = title)
+```
+
+### Recomendaciones de Peliculas
+
+
+Utilizaremos datos de movielens, que están en https://grouplens.org/datasets/movielens/20m/: 20 million ratings and 465,000 tag applications applied to 27,000 movies by 138,000 users.
+
+- 1 Construye una muestra de entrenamiento y validación
+
+Nota.- El objetivo  es predecir el ranking de cada usuario con base en la información disponible en las bases: `genome_scores, genome_tags, links, movies, raitings, tags`. Por lo que la división de datos para la validación cruzada tiene que estar basada en el nivel usuarios.
+
+```{r initialsetups,echo=FALSE,include=FALSE}
+#source("00.- Functions.R")
+genome_scores <- read_csv("genome-scores.csv")
+genome_tags <- read_csv("genome-tags.csv")
+links <- read_csv("links.csv")
+movies <- read_csv("movies.csv")
+ratings <- read_csv("ratings.csv")
+tags <- read_csv("tags.csv")
+trainIndex<-createDataPartition(ratings$userId , p=.8, list = FALSE, times = 1)
+
+```
+
+
+```{r encabezadoentrenamiento,echo=FALSE,message=FALSE}
+
+UsuariosEntrenamiento<-ratings[trainIndex,]
+DT::datatable(UsuariosEntrenamiento[1:100,],caption = "Datos de Entrenamiento")
+```
+
+
+
+
+
+
+```{r encabezadoprueba,echo=FALSE,message=FALSE}
+UsuariosPrueba<-ratings[-trainIndex,]
+DT::datatable(UsuariosPrueba[1:100,],caption = "Datos de Prueba")
+
+```
+
+
+
+```{r comparaciondemediaratingststtrain, echo=FALSE,message=FALSE}
+medias_pelis_entrenamiento <- UsuariosEntrenamiento%>%group_by(movieId)%>%summarise(media_peli = mean(rating),usuarios=n_distinct(userId))
+medias_pelis_entrenamiento <- left_join(medias_pelis_entrenamiento, movies)
+medias_pelis_entrenamiento<-medias_pelis_entrenamiento%>%arrange(desc(usuarios))%>%select(title,usuarios,media_peli)
+DT::datatable(medias_pelis_entrenamiento[1:100,],caption = "Top 100 peliculas con base en el numero de usuarios que calificaron en Entrenamiento ")
+```
+
+
+
+```{r comparaciondemediaratingststtrain_1, echo=FALSE,message=FALSE}
+medias_pelis_prueba <- UsuariosPrueba%>%group_by(movieId)%>%summarise(media_peli = mean(rating),usuarios=n_distinct(userId))
+medias_pelis_prueba <- left_join(medias_pelis_prueba, movies)
+medias_pelis_prueba<-medias_pelis_prueba%>%arrange(desc(usuarios))%>%select(title,usuarios,media_peli)
+DT::datatable(medias_pelis_prueba[1:100,],caption = "Top 100 peliculas con base en el numero de usuarios que calificaron en Prueba ")
+```
+
+
+
+<p>Nota que en ambos grupos (entrenamiento y prueba) el top  de peliculas es el mismo</p>
+
+
+
+
+- 2.- Utiliza descenso estocástico o mínimos cuadrados alternados para encontrar factores latentes.
+
+```{r ECM}
+#Definimos la función que calculará el error
+recm <- function(calif, pred){
+  sqrt(mean((calif - pred)^2))
+}
+```
+    
+
+
+Los ejercicios 2 y 3 se hacen de forma conjunta al ir resolviendo modelos y comparandolos por su ECM
+
+
+
+```{r hetereogeneidadescala,warning=FALSE}
+medias_usuario_ent <- UsuariosEntrenamiento %>% 
+    group_by(userId) %>%
+    summarise(media_usu = mean(rating), num_calif_usu = length(rating))
+medias_peliculas_ent <- UsuariosEntrenamiento %>% 
+    group_by(movieId) %>%
+    summarise(media_peli = mean(rating), num_calif_peli = length(rating))
+media_gral_ent <- mean(UsuariosEntrenamiento$rating)
+UsuariosPrueba2 <- UsuariosPrueba %>%
+  left_join(medias_usuario_ent) %>%
+  left_join(medias_peliculas_ent) %>%
+  mutate(media_gral = media_gral_ent) %>%
+  mutate(prediccion = media_peli + (media_usu - media_gral))
+
+
+UsuariosPrueba2$prediccion[is.na(UsuariosPrueba2$prediccion)] <- media_gral_ent
+ErrorModeloBase<-UsuariosPrueba2 %>% ungroup %>% summarise(error = recm(rating, prediccion))
+knitr::kable(ErrorModeloBase, caption = "Error al predecir con la media general")
+```
+
+
+
+
+
+```{r reduciendolosdatos1,echo=FALSE}
+##Se necesita mas memoria de la disponible en mi maquina para correr el ejercicio con la base completa
+muestra_train<-UsuariosEntrenamiento[sample(1:nrow(UsuariosEntrenamiento),3000000,replace=FALSE),]
+media_gral_ent <- mean(muestra_train$rating)
+porcetajefake<-3000000/16000212
+numerofakeprueba<-round(porcetajefake*4000051)
+muestra_test<-UsuariosPrueba[sample(1:nrow(UsuariosPrueba),numerofakeprueba,replace=FALSE),]
+```
+
+
+
+```{r calibraciondedimensiones}
+library(sparklyr)
+#Ciclo para el hiper parametro referente al numero de dimensiones latenes
+  # configuración para spark
+  config <- spark_config()
+  config$`sparklyr.shell.driver-memory` <- "4G"
+  # conectar con "cluster" local
+  sc <- spark_connect(master = "local", config = config)
+  spark_set_checkpoint_dir(sc, './checkpoint')
+  dat <- muestra_train %>% 
+        as_data_frame %>% 
+        select(movieId, userId, rating)
+  entrena_tbl <- copy_to(sc, dat, overwrite = TRUE, memory = FALSE)
+  entrena_tbl
+  valida_tbl <- copy_to(sc, muestra_test)
+  valida_tbl
+
+out<-matrix(0,ncol = 5,nrow = 5)
+rows_names<-matrix(ncol=1,nrow=5)
+columns_names<-matrix(ncol=1,nrow=5)
+m=0
+for(i in c(5,10,20,50,100)){
+  m=m+1
+  rows_names[m,1]<-paste0("Dimension_",i)
+  n=0
+  for(j in c(0.001,0.01,0.1,1,10)){
+    modelo <- ml_als(entrena_tbl, 
+              rating_col = 'rating',
+              user_col = 'userId',
+              item_col = 'movieId', 
+              rank = i, reg_param = j,
+              checkpoint_interval = 5,
+              max_iter = 30)
+    preds <- sdf_predict(valida_tbl, modelo) %>% collect() #traemos a R con collect
+    preds$prediction[is.nan(preds$prediction)] <- media_gral_ent
+    #error_model<-preds %>% ungroup %>% summarise(error = recm(rating, prediction))
+    n=n+1
+    columns_names[n,1]<-paste0("lambda_",j)
+    out[n,m]<-preds %>% ungroup %>% summarise(error = recm(rating, prediction))%>%as.double()
+}}
+
+
+sparklyr::spark_disconnect_all()
+
+TablaErrores<-as.data.frame(out)
+colnames(TablaErrores)<-rows_names
+row.names(TablaErrores)<-columns_names
+
+knitr::kable(TablaErrores, caption = "Tabla de Errores")
+```
+
+
+
+
+
+
+
+
+<p>El mínimo error se obtiene con **10 dimensiones latentes** y **parametro de regularización 0.1**</p>
+
+
+
+
+
+- 4.- Explica cómo hacer predicciones a partir del modelo (predicción de la calificación 1-5). ¿Qué películas recomendarías para el usuario usuario 4000 y el usuario 6000, y usuario 1333? (que no haya visto)
+
+Para hacer predicciones en el modelo usamos la siguiente regla:
+
+$$\widetilde{x}_{i,j} = \sum_{k}  u_{i,k}v_{j,k}$$
+
+- Nota se suma sobre todas las dimensiones latentes $k \in \Re^{+}$
+
+Pues se postula que:
+
+$$ X \approx \widetilde{X}=UV^{t}$$
+
+
+Donde $\widetilde{X}$ es una matriz con todos los pares de **pelicula-persona** indica es la predicción del modelo de dimensiones latentes $U$ es una matriz con de dimensiones $nxk$ con n numero de usuarios y $V$ es una matriz de $pxk$ donde p es el número de peliculas
+
+La libreria `sparklyr` ya tiene una función para hacer esto para cada pelicula y proponer extraer el máximo
+
+
+```{r modeloelegido}
+  library(sparklyr)
+  # configuración para spark
+  config <- spark_config()
+  #config$`sparklyr.shell.driver-memory` <- "4G"
+  # conectar con "cluster" local
+  sc <- spark_connect(master = "local", config = config)
+  spark_set_checkpoint_dir(sc, './checkpoint')
+  dat <- muestra_train %>% 
+        as_data_frame %>% 
+        select(movieId, userId, rating)
+  entrena_tbl <- copy_to(sc, dat, overwrite = TRUE, memory = FALSE)
+  entrena_tbl
+  valida_tbl <- copy_to(sc, muestra_test)
+  valida_tbl
+  modelo <- ml_als(entrena_tbl, 
+              rating_col = 'rating',
+              user_col = 'userId',
+              item_col = 'movieId', 
+              rank = 10, reg_param = 0.1,
+              checkpoint_interval = 5,
+              max_iter = 100)
+  preds <- sdf_predict(valida_tbl, modelo) %>% collect() #traemos a R con collect
+  tabla<- as.data.frame(table(is.nan(preds$prediction)))
+  head(tabla)
+  #assign(aux,tabla)
+  p<-ggplot(preds, aes(x = prediction)) + geom_histogram(color="coral4",fill="red")
+  graph<-p+scale_y_continuous(labels = scales::comma)+xlim(0,6)+ ggtitle(paste0("Histograma de Predicciones: Modelo con 2 dimensiones parametro lambda 0.05"))
+  preds$prediction[is.nan(preds$prediction)] <- media_gral_ent
+  error_model<-preds %>% ungroup %>% summarise(error = recm(rating, prediction))
+  Recomendaciones<-as.data.frame(ml_recommend(modelo)) 
+  sparklyr::spark_disconnect_all()
+  graph
+```
+
+
+Recomendacion al usuario **4000**
+
+```{r recomendacion1,echo=FALSE}
+
+Usuario4000<-Recomendaciones%>%filter(userId==4000)%>%inner_join(movies)
+Usuario4000
+knitr::kable(Usuario4000[1,c(1,3,5,6)], align = c("c","c","l","l"), caption = "Recomendación para el usuario 4000")
+```
+
+
+Recomendacion al usuario **6000**
+
+```{r recomendacion2,echo=FALSE}
+
+Usuario6000<-Recomendaciones%>%filter(userId==6000)%>%inner_join(movies)
+Usuario6000
+knitr::kable(Usuario6000[1,c(1,3,5,6)], align = c("c","c","l","l"), caption = "Recomendación para el usuario 6000")
+```
+
+
+
+
+Recomendacion al usuario **1333**
+
+```{r recomendacion3,echo=FALSE}
+
+Usuario1333<-Recomendaciones%>%filter(userId==1333)%>%inner_join(movies)
+Usuario1333
+knitr::kable(Usuario1333[1,c(1,3,5,6)], align = c("c","c","l","l"), caption = "Recomendación para el usuario 1333")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
