@@ -1,0 +1,663 @@
+---
+title: "Examen Parcial"
+author: "Eduardo Hidalgo, eduardohidalgogarcia@gmail.com"
+date: "October 27, 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+#--- Usar espejo CRAN del ITAM ---
+knitr::opts_chunk$set(echo = TRUE)
+options(repos="http://cran.itam.mx/")
+library(corrplot)
+library(R2OpenBUGS)
+library(R2jags)
+library(gridExtra)
+library(tidyverse)
+setwd("~/Documents/modelos lineales generalizados/parcial2018")
+
+#-Reading data-
+bills<-read_csv("http://allman.rhon.itam.mx/~lnieto/index_archivos/BillsMXc.csv",col_names = TRUE)
+
+#--- Funciones utiles ---
+prob<-function(x){
+  out<-min(length(x[x>0])/length(x),length(x[x<0])/length(x))
+  out
+}
+
+printf <- function(...) invisible(print(sprintf(...)))
+```
+
+# Definición del problema
+
+El Banco de México es el responsable de emitir los billetes que circulan en la economía mexicana. Se cuenta con la información del número de billetes en circulación (C) y la cantidad de billetes falsos (Y), ambas en millones de piezas, para los años de 2000 a 2011. Para identificar la denominación del billete definimos variables indicadoras x20, x50, x100, x200 y x500. 
+
+La base de datos se encuentra en: http://allman.rhon.itam.mx/~lnieto/index_archivos/BillsMXc.csv
+
+```{r database,echo=FALSE,warning=FALSE,message=FALSE}
+knitr::kable(head(bills), caption = "Base de datos")
+```
+
+
+## Inciso (a)
+
+
+Realiza un análisis exploratorio de los datos. Crea las gráficas y encuentra las estadísticas que mejor describan la información y coméntalas. Obtén conclusiones por tipo de denominación.
+
+
+
+La base se encuentra estructurada de forma vertical, bloques de 12 en 12 observaciones:
+
+```{r 1.A,echo=FALSE,warning=FALSE,message=FALSE}
+knitr::kable(bills%>%group_by(Year)%>%summarise(CT=sum(C),YT=sum(Y),Veces20=sum(x20),Veces50=sum(x50),Veces100=sum(x100),Veces200=sum(x200),Veces500=sum(x500)), caption = "Estructura de los datos")
+```
+
+Cada bloque esta basado en la denominación indicada por la variable del tipo `x` cuyo valor sea igual a `1`. En él se consolida la información del año (`Year`), la cantidad de billetes por denominacion en circulación (`C`) y la cantidad de éstos falsos (`Y`).
+
+Para entender la base es necesario llevarla de un formato *long* a uno *whide*. Así podremos entender el resumen de las variables, a traves de la tasa o proporción de billetes falsos por tipo de denonminación, y ver que en realidad contamos con `5 variables` cada una con `12 observaciones` 
+
+```{r 1.A.1,echo=FALSE,warning=FALSE,message=FALSE}
+x20dba<-bills%>%filter(x20==1)%>%select(Year,C,Y)%>%mutate(PropFalsos=Y/C)
+colnames(x20dba)<-c("Year","Cantidad_20","Falsos_20","PropFalsos_20")
+x50dba<-bills%>%filter(x50==1)%>%select(Year,C,Y)%>%mutate(PropFalsos=Y/C)
+colnames(x50dba)<-c("Year","Cantidad_50","Falsos_50","PropFalsos_50")
+x100dba<-bills%>%filter(x100==1)%>%select(Year,C,Y)%>%mutate(PropFalsos=Y/C)
+colnames(x100dba)<-c("Year","Cantidad_100","Falsos_100","PropFalsos_100")
+x200dba<-bills%>%filter(x200==1)%>%select(Year,C,Y)%>%mutate(PropFalsos=Y/C)
+colnames(x200dba)<-c("Year","Cantidad_200","Falsos_200","PropFalsos_200")
+x500dba<-bills%>%filter(x500==1)%>%select(Year,C,Y)%>%mutate(PropFalsos=Y/C)
+colnames(x500dba)<-c("Year","Cantidad_500","Falsos_500","PropFalsos_500")
+billswide<-inner_join(x20dba,x50dba,by="Year")%>%inner_join(x100dba,by="Year")%>%inner_join(x200dba,by="Year")%>%inner_join(x500dba,by="Year")%>%inner_join(bills%>%group_by(Year)%>%summarise(Cantidad_Total=sum(C),Falsos_Total=sum(Y))%>%mutate(PropFalsos_Total=Falsos_Total/Cantidad_Total))
+billswide_final<-billswide%>%select(Year,PropFalsos_20,PropFalsos_50,PropFalsos_100,PropFalsos_200,PropFalsos_500)
+
+knitr::kable(summary(billswide_final), caption = "Resuemn de Proporción de Billetes Falsos x Denominación")
+
+#knitr::kable(summary(inner_join(x20dba,x50dba,by="Year")), caption = "Resumen de Variables Baja Denominación")
+
+#knitr::kable(summary(inner_join(x100dba,x200dba,by="Year")%>%inner_join(x500dba,by="Year")), caption = "Resumen de Variables Alta Denominación")
+```
+
+
+Y la proporción de billetes falsos del total de los billetes en circulación :
+
+```{r EjA.2,echo=FALSE,message=FALSE,warning=FALSE}
+knitr::kable(summary(billswide%>%select(PropFalsos_Total)), caption = "Resumen de Proporción Total de Billetes Falsos")
+```
+
+Podemos observar que en promedio los billetes de 50 mxn son los que tienen mayor proporción de billetes falsos. Por arriba del promedio general de la proporción de billetes falsificados tenemos a los billetes de 20, 50 y 100 mxn. Por debajo del promedio general tenemos a los billetes de 200 y 500 mxn.
+
+
+## El modelo
+
+Ignorando la dependencia temporal que pudiera existir entre las observaciones de distintos años, considera un modelo de regresión binomial de la forma
+
+$$Y \sim Bin(C_{i},\pi_{i}) \textrm{ donde } i=1,...,60$$
+$$\textrm{ define el predictor lineal: } \eta_{i}=\beta_{1}+\beta_{2} x50_{i}+\beta_{3} x100_{i}+\beta_{4} x200_{i}+\beta_{5} x500_{i}$$
+
+Nota la variable $x20_{i}$ no esta presente en el predictor lineal pues no queremos se indetermine el modelo.
+
+EL objetivo es **comparar** el desempeño del **modelo lineal generalizado binomial** bajo **dos funciones liga**: la **logística** y la complementaria **log-log**.
+
+## Inciso (b)
+
+
+Ajuste el modelo de regresión binomial con liga logística, i.e., $logit(\pi_{i})=\eta_{i}$ y usa como distribuciones iniciales $\beta_{j} \sim N(0,0.001) \textrm{ donde } j=1,...,5$. Calcula los indicadores de ajuste DIC y pseudoR2. Encuentra los estimadores puntuales y por intervalo de los parámetros del modelo, interprétalos y comenta qué tan bueno es el modelo.
+
+
+```{r Bmodelo,echo=FALSE,message=FALSE,warning=FALSE,results=FALSE}
+bills_model<-bills%>%mutate(Prop_Falsos=Y/C)
+
+n<-nrow(bills_model)
+
+data<-list("n"=n,"ne"=bills_model$C,"y"=bills_model$Y,"x1"=bills_model$x50,"x2"=bills_model$x100,"x3"=bills_model$x200,"x4"=bills_model$x500)
+
+#-Defining inits-
+#inits<-function(){list(alpha=1,beta=1,tau=1,yf=rep(0,n))}
+inits<-function(){list(beta=rep(0,5),yf=rep(0,n))}
+
+#-Selecting parameters to monitor-
+#parameters<-c("alpha","beta","tau","yf")
+parameters<-c("beta","p","yf")
+
+#-Running code-
+#OpenBUGS
+ejb.sim.bugs<-bugs(data,inits,parameters,model.file="Ejb.txt",
+              n.iter=10000,n.chains=1,n.burnin=1000)
+#JAGS
+ejb.sim.jags<-jags(data,inits,parameters,model.file="Ejb.txt",
+              n.iter=10000,n.chains=1,n.burnin=1000,n.thin=1)
+
+#ejb.sim.jags<-jags(dataH,inits,parameters,model.file="Ejb1.txt",
+#              n.iter=10000,n.chains=1,n.burnin=1000,n.thin=1)
+#OpenBUGS
+out.bugs<-ejb.sim.bugs$sims.list
+
+#JAGS
+out.jags<-ejb.sim.jags$BUGSoutput$sims.list
+
+#Resumen (estimadores)
+#OpenBUGS
+out.sum.bugs<-ejb.sim.bugs$summary
+
+#JAGS
+out.sum.jags<-ejb.sim.jags$BUGSoutput$summary
+```
+
+
+
+
+```{r BBondad,echo=FALSE,warning=FALSE,message=FALSE}
+#Tabla resumen BUGS
+out.sum.t<-out.sum.bugs[grep("beta",rownames(out.sum.bugs)),c(1,3,7)]
+out.sum.t<-cbind(out.sum.t,apply(out.bugs$beta,2,prob))
+dimnames(out.sum.t)[[2]][4]<-"prob"
+out.sum.t.bugs<-out.sum.t
+knitr::kable(out.sum.t.bugs, caption = "Estimadores Puntuales e Intervalos de Confianza: BUGS",row.names = TRUE)
+#Tabla resumen JAGS
+out.sum.t<-out.sum.jags[grep("beta",rownames(out.sum.jags)),c(1,3,7)]
+out.sum.t<-cbind(out.sum.t,apply(out.jags$beta,2,prob))
+dimnames(out.sum.t)[[2]][4]<-"prob"
+out.sum.t.jags<-out.sum.t
+knitr::kable(out.sum.t.jags, caption = "Estimadores Puntuales e Intervalos de Confianza: JAGS",row.names = TRUE)
+ModeloLigaLogit<-out.sum.t.jags
+CompletoLigaLogit<-out.sum.jags
+#DIC
+out.dic.bugs<-ejb.sim.bugs$DIC
+out.dic.jags<-ejb.sim.jags$BUGSoutput$DIC
+#Pseudo R
+aux<-out.sum.bugs[grep("yf",rownames(out.sum.bugs)),1]%>%as.data.frame()
+colnames(aux)[1]<-c("ygorro")
+R2.bugs<-(cor(bills_model$Y,aux$ygorro))^2
+
+aux<-out.sum.jags[grep("yf",rownames(out.sum.jags)),1]%>%as.data.frame()
+colnames(aux)[1]<-c("ygorro")
+R2.jags<-(cor(bills_model$Y,aux$ygorro))^2
+DIC<-c(out.dic.bugs,out.dic.jags)
+PseudoR<-c(R2.bugs,R2.jags)
+Software<-(c("BUGS","JAGS"))
+BondadAjusteLigaLogit<-data.frame(Software,PseudoR,DIC)
+knitr::kable(BondadAjusteLigaLogit, caption = "Resumen de Medidas de Bondad de Ajuste: BUGS vs. JAGS",row.names = FALSE)
+```
+
+
+En conclusión, la correlación al cuadrado entre lo observado mediante la variable $Y$ y las predicciones hechas con el modelo lineal generalizado binomial con liga logit $\widehat{Y}$ fue de .55 un valor muy alejado de una correlación perfecta . Lo anterior, indica que es necesario seguir trabajando con el modelo para mejorar la presición de nuestras predicciones.
+
+## Inciso (c)
+
+### c.1
+
+En el `modelo de regresión binomial` con liga logística, ¿cuál es la interpretación del coeficiente $\beta_{1}$ en el modelo? 
+
+En el modelo de regresion binomial con liga logística los coeficientes $\beta_{i} \forall i \in [1,5]$ implican la determinación de la `probabilidad de éxito` en la `distribución binomial` de la siguient manera:
+
+$$\eta_{i}= \beta_{1}+\beta_{2}x50_{i}+\beta_{3}x100_{i}+\beta_{4}x200_{i}+\beta_{5}x500_{i}$$
+$$\Rightarrow p_{i}=\frac{exp(\eta_{i})}{(1+exp(\eta_{i}))}$$
+
+$$\Rightarrow Y_{i} \sim Bin(p_{i},C_{i})$$
+
+En este sentido nota que si $x50_{i}=x100_{i}=x200_{i}=x500_{i}=0$ entonces se tiene $n_{i}=\beta_{1}$, por lo que:
+
+$$\widehat{Y}_{i}=E(Y_{i}|p_{i},c_{i},X_{i})=E(Y_{i}|p_{i},c_{i},x20_{i})=\beta_{1,i}C_{i} \textrm{ donde } i \in [1,12]$$
+
+Y, $\widehat{Y}_{i}$ denota la cantidad esperada (promedio) de billetes de 20 pesos falsos como resultado de una cantidad total de billetes de 20 pesos emitidos. En realidad el estimador como esta planteado sólo tiene sentido para el rango de valores donde $i \in [1,12]$ pues para los restante $i-valores \textrm{ la variable } C_{i}$ esta representando la cantidad de billetes emitidos de otras denominaciones(en ese caso: $\widehat{Y}_{i} = (\beta_{1}+\beta{j})C_{i}$).
+
+En el caso de la denominación de 20 pesos, se tiene (JAGS):
+
+$$\beta_{1}=-6.2$$
+
+$$\Rightarrow \eta_{i} =\beta_{1}=-6.2,\forall i \in [1,12]\equiv \eta_{20}$$
+
+$$\Rightarrow p_{20}=\frac{exp(-6.2)}{1+exp(-6.2)}$$
+
+
+```{r P20logit,echo=FALSE,results='asis',message=FALSE,warning=FALSE}
+beta1<-out.sum.jags[grep("beta",rownames(out.sum.jags)),c(1)][1]
+p20<-c(exp(beta1)/(1+exp(beta1)))%>%as.data.frame()
+colnames(p20)[1]<-c("Prob de Billetes Falsos")
+
+
+knitr::kable(p20, caption = "Estimación de la probabilidad de billetes de 20 mxn falsos liga: logit",row.names = FALSE)
+```
+
+
+### c.2
+
+En el modelo de regresión binomial con liga logística, ¿cómo interpretas la suma $\beta_{i}+\beta_{j} \textrm{ para } j=2,...,5$?
+
+
+La respuesta es que corresponde al **cambio del momio asociado a la probabilidad de tener billetes falsos, al incluir la denominación** `j`. Se demuestra de la siguiente manera:
+
+Sea 
+
+$$log(\frac{p_{i}}{1-p_{i}})=\left\{\begin{matrix}
+ \beta_{1}  & \textrm{ si } i \in [1,12] \\ 
+\beta_{1}+\beta_{2} & \textrm{ si } i \in [13,24]\\ 
+\beta_{1}+\beta_{3} & \textrm{ si } i \in [25,36]\\ 
+\beta_{1}+\beta_{4} & \textrm{ si } i \in [37,48]\\ 
+\beta_{1}+\beta_{5} & \textrm{ si } i \in [49,60]
+\end{matrix}\right.$$
+
+donde:
+
+$$\frac{p_{i}}{1-p_{i}} \textrm{ es el momio asociado a la probabilidad de billetes falsos en cada denominacion}$$
+
+Definamos:
+
+$$i=\left \{ 20 \right \} \textrm{ y } j \in \left \{ \left \{ 50 \right \}, \left \{ 100 \right \}, \left \{ 200 \right \}, \left \{ 500 \right \} \right \}$$
+
+
+
+
+
+$$\Rightarrow log(\frac{p_{i}}{1-p_{i}})=\beta_{i}\equiv \beta_{20} \textrm{ (caso base)}$$
+
+
+
+$$\Rightarrow  log(\frac{p_{j}}{1-p_{j}})=\beta_{1}+\beta_{d} \textrm{ donde: } d \in \left \{ \left \{ 50 \right \}, \left \{ 100 \right \}, \left \{ 200 \right \}, \left \{ 500 \right \} \right \}$$
+
+$$\Rightarrow \beta_{d}= log(\frac{p_{j}}{1-p_{j}})-log(\frac{p_{i}}{1-p_{i}})$$
+
+$$\Rightarrow exp(\beta_{d})=\frac{\frac{p_{j}}{1-p_{j}}}{\frac{p_{i}}{1-p_{i}}} \equiv \frac{\textrm{momio asociado a la probabilidad de billetes falsos distintos a 20 mxn}}{\textrm{momio asociado a la probabilidad de billetes falsos de 20 mxn}} \equiv \Delta \textrm{momios}$$
+
+## Inciso (d)
+
+En el modelo de regresión binomial con liga logística define “la tasa de billetes falsos por mil circulando” para cada denominación como:
+
+$$p_{j}=1000 \frac{exp(\beta_{1}+\beta_{j})}{1+exp(\beta_{1}+\beta_{j})}$$
+
+Estima estas tasas mediante un intervalo de 95% de probabilidad y coméntalas.
+
+```{r incisod,echo=FALSE,warning=FALSE,message=FALSE}
+
+EstimacionP1000_logit<-out.sum.jags[grep("p",rownames(out.sum.jags)),c(1,3,7)]%>%as.data.frame()
+EstimacionP1000_logit$mean<-EstimacionP1000_logit$mean*1000
+EstimacionP1000_logit$`2.5%`<-EstimacionP1000_logit$`2.5%`*1000
+EstimacionP1000_logit$`97.5%`<-EstimacionP1000_logit$`97.5%`*1000
+knitr::kable(EstimacionP1000_logit, caption = "Estimación de la tasa de billetes falsos por mil circulando liga: logit",row.names = TRUE)
+```
+
+
+Recordemos que la base esta estructurada con base en bloques de 12 en 12 observaciones. Es por esto que podemos observar cambios estructurales en la probabilidad asociada a billetes falsos de 12 en 12 observaciones.
+
+
+
+## Inciso (e)
+
+Ajuste el modelo de regresión binomial con liga complementaria log-log, i.e., $log(-log(1-p_{i}))=\eta_{i}$ y usa como distribuciones iniciales $\beta_{j} \sim N(0,0.001) \textrm{ donde } j=1,...,5$. Calcula los indicadores de ajuste DIC y pseudoR2. Encuentra los estimadores puntuales y por intervalo de los parámetros del modelo, interprétalos y comenta qué tan bueno es el modelo.
+
+
+
+
+```{r Emodelo,echo=FALSE,message=FALSE,warning=FALSE,results=FALSE}
+#bills_model<-bills%>%mutate(Prop_Falsos=Y/C)
+
+n<-nrow(bills_model)
+
+data<-list("n"=n,"ne"=bills_model$C,"y"=bills_model$Y,"x1"=bills_model$x50,"x2"=bills_model$x100,"x3"=bills_model$x200,"x4"=bills_model$x500)
+
+#-Defining inits-
+#inits<-function(){list(alpha=1,beta=1,tau=1,yf=rep(0,n))}
+inits<-function(){list(beta=rep(0,5),yf=rep(0,n))}
+
+#-Selecting parameters to monitor-
+#parameters<-c("alpha","beta","tau","yf")
+parameters<-c("beta","p","yf")
+
+#-Running code-
+#OpenBUGS
+eje.sim.bugs<-bugs(data,inits,parameters,model.file="Eje.txt",
+              n.iter=10000,n.chains=1,n.burnin=1000)
+#JAGS
+eje.sim.jags<-jags(data,inits,parameters,model.file="Eje.txt",
+              n.iter=10000,n.chains=1,n.burnin=1000,n.thin=1)
+
+#ejb.sim.jags<-jags(dataH,inits,parameters,model.file="Ejb1.txt",
+#              n.iter=10000,n.chains=1,n.burnin=1000,n.thin=1)
+#OpenBUGS
+out.bugs<-eje.sim.bugs$sims.list
+
+#JAGS
+out.jags<-eje.sim.jags$BUGSoutput$sims.list
+
+#Resumen (estimadores)
+#OpenBUGS
+out.sum.bugs<-eje.sim.bugs$summary
+
+#JAGS
+out.sum.jags<-eje.sim.jags$BUGSoutput$summary
+```
+
+
+
+
+
+```{r EBondad,echo=FALSE,warning=FALSE,message=FALSE}
+#Tabla resumen BUGS
+out.sum.t<-out.sum.bugs[grep("beta",rownames(out.sum.bugs)),c(1,3,7)]
+out.sum.t<-cbind(out.sum.t,apply(out.bugs$beta,2,prob))
+dimnames(out.sum.t)[[2]][4]<-"prob"
+out.sum.t.bugs<-out.sum.t
+knitr::kable(out.sum.t.bugs, caption = "Estimadores Puntuales e Intervalos de Confianza: BUGS",row.names = TRUE)
+#Tabla resumen JAGS
+out.sum.t<-out.sum.jags[grep("beta",rownames(out.sum.jags)),c(1,3,7)]
+out.sum.t<-cbind(out.sum.t,apply(out.jags$beta,2,prob))
+dimnames(out.sum.t)[[2]][4]<-"prob"
+out.sum.t.jags<-out.sum.t
+knitr::kable(out.sum.t.jags, caption = "Estimadores Puntuales e Intervalos de Confianza: JAGS",row.names = TRUE)
+ModeloLigacloglog<-out.sum.t.jags
+CompletoLigacloglog<-out.sum.jags
+#DIC
+out.dic.bugs<-ejb.sim.bugs$DIC
+out.dic.jags<-ejb.sim.jags$BUGSoutput$DIC
+#Pseudo R
+aux<-out.sum.bugs[grep("yf",rownames(out.sum.bugs)),1]%>%as.data.frame()
+colnames(aux)[1]<-c("ygorro")
+R2.bugs<-(cor(bills_model$Y,aux$ygorro))^2
+
+aux<-out.sum.jags[grep("yf",rownames(out.sum.jags)),1]%>%as.data.frame()
+colnames(aux)[1]<-c("ygorro")
+R2.jags<-(cor(bills_model$Y,aux$ygorro))^2
+DIC<-c(out.dic.bugs,out.dic.jags)
+PseudoR<-c(R2.bugs,R2.jags)
+Software<-(c("BUGS","JAGS"))
+BondadAjusteLigacloglog<-data.frame(Software,PseudoR,DIC)
+knitr::kable(BondadAjusteLigacloglog, caption = "Resumen de Medidas de Bondad de Ajuste: BUGS vs. JAGS",row.names = FALSE)
+```
+
+
+En conclusión, la correlación al cuadrado entre lo observado mediante la variable $Y$ y las predicciones hechas con el modelo lineal generalizado binomial con liga clog-log $\widehat{Y}$ fue de .55 un valor muy alejado de una correlación perfecta . Lo anterior, indica que es necesario seguir trabajando con el modelo para mejorar la presición de nuestras predicciones.
+
+### Inciso (f)
+
+
+
+### f.1
+
+En el `modelo de regresión binomial` con liga log-log, ¿cuál es la interpretación del coeficiente $\beta_{1}$ en el modelo? 
+
+En el modelo de regresion binomial con liga log-log los coeficientes $\beta_{i} \forall i \in [1,5]$ implican la determinación de la `probabilidad de éxito` en la `distribución binomial` de la siguient manera:
+
+$$\eta_{i}= \beta_{1}+\beta_{2}x50_{i}+\beta_{3}x100_{i}+\beta_{4}x200_{i}+\beta_{5}x500_{i}$$
+
+
+Lo que varia, respecto a la liga logit, es la definición de $p_{i}$ con base en el predictor lineal se tiene para el modelo clog-log:
+
+$$p_{i}=\frac{exp(exp(\eta_{i}))-1}{exp(exp(\eta_{i}))}$$
+
+El modelo para la $Y_{i}$ sigue siendo binomial por lo que:
+
+$$\Rightarrow Y_{i} \sim Bin(p_{i},C_{i})$$
+
+
+En este sentido nota que si $x50_{i}=x100_{i}=x200_{i}=x500_{i}=0$ entonces se tiene $n_{i}=\beta_{1}$, por lo que:
+
+$$\widehat{Y}_{i}=E(Y_{i}|p_{i},c_{i},X_{i})=E(Y_{i}|p_{i},c_{i},x20_{i})=\beta_{1,i}C_{i} \textrm{ donde } i \in [1,12]$$
+
+Y, $\widehat{Y}_{i}$ denota la cantidad esperada (promedio) de billetes de 20 pesos falsos como resultado de una cantidad total de billetes de 20 pesos emitidos. En realidad el estimador como esta planteado sólo tiene sentido para el rango de valores donde $i \in [1,12]$ pues para los restante $i-valores \textrm{ la variable } C_{i}$ esta representando la cantidad de billetes emitidos de otras denominaciones(en ese caso: $\widehat{Y}_{i} = (\beta_{1}+\beta{j})C_{i}$).
+
+En el caso de la denominación de 20 pesos, se tiene (JAGS):
+
+
+$$\beta_{1}=-6.2$$
+
+$$\Rightarrow \eta_{i} =\beta_{1}=-6.2,\forall i \in [1,12]\equiv \eta_{20}$$
+
+$$\Rightarrow p_{20}=\frac{exp(exp(-6.2))-1}{exp(exp(-6.2))}$$
+
+
+```{r P20cloglog,echo=FALSE,results='asis',message=FALSE,warning=FALSE}
+beta1<-out.sum.jags[grep("beta",rownames(out.sum.jags)),c(1)][1]
+p20<-c((exp(exp(beta1))-1)/exp(exp(beta1)))%>%as.data.frame()
+colnames(p20)[1]<-c("Prob de Billetes Falsos")
+
+
+knitr::kable(p20, caption = "Estimación de la probabilidad de billetes de 20 mxn falsos liga: clog-log",row.names = FALSE)
+```
+
+
+Con el objetivo de tener una mejor ejemplificación del siguiente inciso a continuación calculo $p_{50}$:
+
+Se tiene (JAGS):
+
+$$\beta_{2}=2.9$$
+$$\Rightarrow \eta_{i} =\beta_{1}+\beta_{2}=-6.2+2.9 \approx -3.3,\forall i \in [13,24]\equiv \eta_{50}$$
+
+$$\Rightarrow p_{50}=\frac{exp(exp(-3.3))-1}{exp(exp(-3.3))}$$
+
+```{r P50cloglog,echo=FALSE,results='asis',message=FALSE,warning=FALSE}
+beta1<-out.sum.jags[grep("beta",rownames(out.sum.jags)),c(1)][1]
+beta2<-out.sum.jags[grep("beta",rownames(out.sum.jags)),c(1)][2]
+p50<-c((exp(exp(beta1+beta2))-1)/exp(exp(beta1+beta2)))%>%as.data.frame()
+colnames(p50)[1]<-c("Prob de Billetes Falsos")
+
+
+knitr::kable(p50, caption = "Estimación de la probabilidad de billetes de 50 mxn falsos liga: clog-log",row.names = FALSE)
+```
+
+### f.2
+
+En el modelo de regresión binomial con liga logística, ¿cómo interpretas la suma $\beta_{i}+\beta_{j} \textrm{ para } j=2,...,5$?
+
+
+La respuesta es que corresponde al **cambio del logaritmo asociado a la probabilidad de NO tener billetes falsos, al incluir la denominación** `j`. Se demuestra de la siguiente manera:
+
+Sea 
+
+$$log(-log(1-p_{i}))=\left\{\begin{matrix}
+ \beta_{1}  & \textrm{ si } i \in [1,12] \\ 
+\beta_{1}+\beta_{2} & \textrm{ si } i \in [13,24]\\ 
+\beta_{1}+\beta_{3} & \textrm{ si } i \in [25,36]\\ 
+\beta_{1}+\beta_{4} & \textrm{ si } i \in [37,48]\\ 
+\beta_{1}+\beta_{5} & \textrm{ si } i \in [49,60]
+\end{matrix}\right.$$
+
+
+
+
+
+Definamos:
+
+
+
+$$i=\left \{ 20 \right \} \textrm{ y } j \in \left \{ \left \{ 50 \right \}, \left \{ 100 \right \}, \left \{ 200 \right \}, \left \{ 500 \right \} \right \}$$
+
+
+
+
+
+$$\Rightarrow log(-log(1-p_{i}))=\beta_{i}\equiv \beta_{20} \textrm{ (caso base)}$$
+
+
+
+$$\Rightarrow  log(-log(1-p_{i}))=\beta_{1}+\beta_{d} \textrm{ donde: } d \in \left \{ \left \{ 50 \right \}, \left \{ 100 \right \}, \left \{ 200 \right \}, \left \{ 500 \right \} \right \}$$
+
+
+
+
+$$\Rightarrow \beta_{d}= log(-log(1-p_{j}))-log(-log(1-p_{i}))$$
+
+
+
+$$\Rightarrow \beta_{d}=log\frac{log(1-p_{j})}{log(1-p_{i})}$$
+
+
+$$\Rightarrow e^{\beta_{d}}=\frac{log(1-p_{j})}{log(1-p_{i})}\equiv \frac{\textrm{logaritmo asociado a la probabilidad de NO tener billetes falsos distintos a 20 mxn}}{\textrm{logaritmo asociado a la probabilidad de NO tener billetes falsos de 20 mxn}} \equiv \Delta \textrm{logaritmos de NO tener billetes falsos}$$
+
+En particular, recordemos que ya calculamos: $p_{20} \approx  0.001 \textrm{ y } p_{50} \approx 0.037$ por lo que en el caso de $\beta_{50}$, se tiene:
+
+
+$$\Rightarrow e^{\beta_{50}} = \frac{log(1-0.037)}{log(1-0.001)}$$
+
+
+
+
+```{r ebeta50cloglog,echo=FALSE,results='asis',message=FALSE,warning=FALSE}
+v1<-p20$`Prob de Billetes Falsos`
+v2<-p50$`Prob de Billetes Falsos`
+cambio<-c(log(1-v2)/log(1-v1))%>%as.data.frame()
+colnames(cambio)[1]<-c("Cambio en Log NO billetes falsos")
+
+
+knitr::kable(cambio, caption = "Cambio en logaritmos p50: clog-log",row.names = FALSE)
+```
+
+
+## Inciso (g)
+
+En el modelo de regresión binomial con liga logística define “la tasa de billetes falsos por mil circulando” para cada denominación, $p_{j},j=1,..,5$ y estimalas al 95%
+
+NOTA que estas nuevas tasas no se definen igual que en el caso de la liga logística. Encuentra tú la definición correcta para la liga que estas usando.
+
+Recordemos que en el caso de la liga clog-log:
+
+$$p_{i}=\frac{exp(exp(\beta_{1}+\beta_{j})-1)}{exp(\beta_{1}+\beta_{j})}$$
+
+
+Por lo que, en este caso, "la tas de billetes falsos por mil circulando" para cada denominación $p_{j}$, toma la forma :
+
+$$p_{j}=1000\frac{exp(exp(\beta_{1}+\beta_{j})-1)}{exp(\beta_{1}+\beta_{j})}$$
+
+
+
+```{r incisog,echo=FALSE,warning=FALSE,message=FALSE}
+
+EstimacionP1000_cloglog<-out.sum.jags[grep("p",rownames(out.sum.jags)),c(1,3,7)]%>%as.data.frame()
+EstimacionP1000_cloglog$mean<-EstimacionP1000_cloglog$mean*1000
+EstimacionP1000_cloglog$`2.5%`<-EstimacionP1000_cloglog$`2.5%`*1000
+EstimacionP1000_cloglog$`97.5%`<-EstimacionP1000_cloglog$`97.5%`*1000
+knitr::kable(EstimacionP1000_cloglog, caption = "Estimación de la tasa de billetes falsos por mil circulando liga: clog-log",row.names = TRUE)
+```
+
+
+
+## Inciso (h)
+
+### h.1
+
+Compara los modelos de regresión binomial con las dos ligas, logística y complementaria log‐log. De acuerdo con sus medidas de ajuste determina cuál de los dos es el mejor.
+
+NOTA.- A partir de este momento, para una exposición más limpia, se presentan únicamente los resultados obtenidos mediante la simulaciones del software `JAGS`
+
+```{r h1bondad,echo=FALSE,message=FALSE,warning=FALSE}
+ligalogit<-BondadAjusteLigaLogit[2,]%>%mutate(Liga="Logit")
+ligacloglog<-BondadAjusteLigacloglog[2,]%>%mutate(Liga="clog-log")
+bondadjagsligas<-rbind(ligalogit,ligacloglog)
+knitr::kable(bondadjagsligas%>%select(Liga,PseudoR,DIC), caption = "Resumen de Medidas de Bondad de Ajuste Liga:  Logit vs. clog-log",row.names = FALSE)
+```
+
+Podemos ver que ambas ligas dan el mismo `DIC`. Recordemos, que en la practica la `psuedo R cuadrada` **no sirve para comparar entre modelos**. Por lo que a un mismo nivel de `DIC` es preferible usar el **modelo que mejor interpretabilidad tenga**. Es por lo anterior, que se elige el modelo con liga `logit`ya que cada $\beta_{j} \textrm{ con } j =1,..,5$ puede interpretarse como el **cambio en el momio asociado a la probabilidad de billetes falsos** en la denominación $j$ respecto al caso base $\beta_{1} \equiv \beta_{20}$.
+
+
+### h.2
+
+Con el mejor modelo realiza una gráfica de predicción del número de billetes falsos y compáralo con los datos observados. Comenta los puntos importantes de esta gráfica. 
+
+
+```{r h.2,echo=FALSE,message=FALSE,warning=FALSE}
+#Predictions
+#cual es el mejor 
+#CompletoLigaLogit
+#CompletoLigacloglog
+out.sum.jags<-CompletoLigaLogit
+out.yf.best<-out.sum.jags[grep("yf",rownames(out.sum.jags)),]%>%as.data.frame()
+VarResp<-bills_model%>%select(Y)
+base<-cbind(out.yf.best,VarResp)%>%cbind(bills_model%>%select(Year))
+base$ID<-seq.int(nrow(base))
+base$Denominación<-ifelse(base$ID<=12,"Billete de 20",ifelse(base$ID>12 & base$ID<=24,"Billete de 50",ifelse(base$ID>24 & base$ID<=36,"Billete de 100",ifelse(base$ID>36 & base$ID<=48,"Billete de 200","Billete de 500"))))
+base$Denominación<-factor(base$Denominación,levels = c("Billete de 20","Billete de 50","Billete de 100","Billete de 200","Billete de 500"))
+
+#ggplot(data=base)+geom_point(aes(x=Year,y=`50%`,colour=Denominación,color="First"),size=2, shape=23)+geom_point(aes(x=Year,y=Y,colour=Denominación,color="Second"),size=2, shape=3)+geom_line(aes(x=Year,y=`mean`,colour=Denominación,color="Third"))+labs(color="Legend text")+facet_wrap(~Denominación)
+p<-ggplot(data=base)+geom_point(aes(x=Year,y=`50%`,color="Mediana Predecida"),size=2, shape=23)+geom_point(aes(x=Year,y=Y,color="Falsos Observados"),size=2, shape=3)+geom_line(aes(x=Year,y=`mean`,color="Promedio Predecido"))+labs(color="Variables")+facet_wrap(~Denominación,scales = 'free')
+p+scale_fill_brewer(palette = "RdYlBu")+labs(y="Billetes Falso en Circulacion" )+ ggtitle(expression(atop("Billetes Falsos en Circulación", atop(italic("Por Denominación"), ""))))
+
+```
+
+En la grafica anterior observamos que las estimaciónes que más se ajustan a los datos observados son para los billetes de 500 mxn. En segundo lugar, de manera visual, la denominación cuya estimación mejor ajusto a los datos observado fue la de los billetes de 200 mxn.
+
+Recordemos que dependiendo de la función de pérdida que utilizemos para consolidar la distribución final en un un estimador puntual se tiene:
+
++ Función de Pérdida Cuadrática: Estimador por la media $\widehat{Y}=E(Y)$
++ Función de Pérdida absoluta: Estimador por la Mediana $\widehat{Y}=Med(Y)$
+
+### h.3
+
+En particular comenta sobre los billetes de 20 mxn y de 50 mxn.
+
+```{r h.3,echo=FALSE,message=FALSE,warning=FALSE}
+p<-ggplot(data=base%>%filter(ID<=24))+geom_point(aes(x=Year,y=`50%`,color="Mediana Predecida"),size=2, shape=23)+geom_point(aes(x=Year,y=Y,color="Falsos Observados"),size=2, shape=3)+geom_line(aes(x=Year,y=`mean`,color="Promedio Predecido"))+labs(color="Variables")+facet_wrap(~Denominación,scales = 'free')
+p+scale_fill_brewer(palette = "RdYlBu")+labs(y="Billetes Falso en Circulacion" )+ ggtitle(expression(atop("Billetes Falsos en Circulación", atop(italic("Baja Denominación"), ""))))
+```
+
+Para los billetes de baja denomincaión, las estimaciones hechas por el modelo, visualmente, parecen ser las que menos ajustaron los datos observados.
+
+## Inciso (i)
+
+Con el mejor modelo, compara las estimaciones de “las tasas de billetes falsos por mil circulando” para las cinco denominaciones. Determina cuales de ellas son estadísticamente diferentes justificando tu respuesta con las estimaciones obtenidas.
+
+
+```{r i,echo=FALSE,message=FALSE,warning=FALSE}
+#EstimacionP1000_cloglog
+#EstimacionP1000_logit
+EstimacionP1000<-EstimacionP1000_logit
+EstimacionP1000$ID<-seq.int(nrow(EstimacionP1000))
+EstimacionP1000$Denominación<-ifelse(EstimacionP1000$ID<=12,"Billete de 20",ifelse(EstimacionP1000$ID>12 & EstimacionP1000$ID<=24,"Billete de 50",ifelse(EstimacionP1000$ID>24 & EstimacionP1000$ID<=36,"Billete de 100",ifelse(EstimacionP1000$ID>36 & EstimacionP1000$ID<=48,"Billete de 200","Billete de 500"))))
+EstimacionP1000$Denominación<-factor(EstimacionP1000$Denominación,levels = c("Billete de 20","Billete de 50","Billete de 100","Billete de 200","Billete de 500"))
+EstimacionP1000<-cbind(EstimacionP1000,bills_model%>%mutate(Promedio=(Y/C)*1000)%>%select(Promedio))
+
+knitr::kable(EstimacionP1000%>%group_by(Denominación)%>%summarise(Promedio=mean(Promedio),Media=mean(`mean`),`2.5%`=mean(`2.5%`),`97.5%`=mean(`97.5%`)), caption = "Comparación de tasas de billetes falsos por mil circulando",row.names = FALSE)
+```
+
+Como se puede observar en la tabla 18 ninguno de los intervalos de confianza al 95% de las estimaciones de la tasa de billetes falsos por mil circulando no se intersectan para cualquier par de denominaciones. Por lo que se puede concluir que todas son significativamente distintas entre ellas.
+
+Es decir, nuestro modelo predice un promedio en la tasa de billetes falsos por mil circulando distinto para cada tipo de billete y este efecto es significativamente distnto entre tipo de billete.
+
+En comparación con el `Promedio` observado podemos notar que aunque la `Media` estimada es estadísticamente distinta de 0, para ninguno de los tipos de denominación el intervalo de confianza al 95% capturó el verdadero valor promedio de la tasa de billetes falsos por cada mil observada en los datos.
+
+Como lo observamos al inicio, probablemente esto se deba a la baja `Pseudo R cuadrada` del modelo.
+
+
+## Código BUGS
+
+### Modelo Binomial con liga Logit
+
+```{r Ejb1, tidy=FALSE, eval=FALSE, highlight=FALSE }
+model
+{
+#Likelihood
+for (i in 1:n) {
+	y[i] ~ dbin(p[i],ne[i])
+	mu[i]<-ne[i]*p[i]
+#Liga logistica
+#	logit(p[i])<-beta[1]+beta[2]*x[i]
+	eta[i]<-beta[1]+beta[2]*x1[i]+beta[3]*x2[i]+beta[4]*x3[i]+beta[5]*x4[i]
+	p[i]<-exp(eta[i])/(1+exp(eta[i]))
+	}
+#Priors 
+for (j in 1:5) { beta[j] ~ dnorm(0,0.001) }
+#Prediction 1
+for (i in 1:n) { yf[i] ~ dbin(p[i],ne[i]) }
+}
+```
+
+
+
+### Modelo Binomial con liga clog-log
+
+```{r Eje, tidy=FALSE, eval=FALSE, highlight=FALSE }
+model
+{
+#Likelihood
+for (i in 1:n) {
+	y[i] ~ dbin(p[i],ne[i])
+	mu[i]<-ne[i]*p[i]
+#Liga clog-log
+#	cloglog(p[i])<-beta[1]+beta[2]*x[i]
+	eta[i]<-beta[1]+beta[2]*x1[i]+beta[3]*x2[i]+beta[4]*x3[i]+beta[5]*x4[i]
+	p[i]<-(exp(exp(eta[i]))-1)/exp(exp(eta[i]))
+	}
+#Priors 
+for (j in 1:5) { beta[j] ~ dnorm(0,0.001) }
+#Prediction 1
+for (i in 1:n) { yf[i] ~ dbin(p[i],ne[i]) }
+}
+```

@@ -1,0 +1,36 @@
+model
+{
+#------------
+#Likelihood
+for (i in 1:n) {
+	y[i] ~ dnorm(mu[i], tau)
+	logit(mu[i])<-beta[1,i]+beta[2,i]*x[i,2]+beta[3,i]*p[i]
+	x[i,3] ~ dnorm(p[i], tau.p)
+	p[i]<-alpha*x[i,1]
+	}
+#------------
+#State eq.
+for (i in 2:n) {
+for (j in 1:3) {
+	beta[j,i] ~ dnorm(beta[j,i-1], tau.b[j])
+}
+}
+#------------
+#Priors 
+for (j in 1:3) { beta[j,1] ~ dnorm(0,0.001) }
+alpha ~ dnorm(0,0.001)
+tau ~ dgamma(0.001,0.001)
+tau.p ~ dgamma(0.001,0.001)
+for (j in 1:3){
+	tau.b[j] <- lam*tau
+	}
+lam ~ dnorm(0.001,0.001)T(0,1)	
+#------------
+
+#Prediction 
+for (i in 1:n) { 
+	yf[i] ~ dnorm(mu[i],tau)
+	pf[i] ~ dnorm(p[i], tau.p)
+	}
+
+}

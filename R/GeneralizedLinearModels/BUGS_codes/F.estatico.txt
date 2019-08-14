@@ -1,0 +1,25 @@
+model
+{
+#------------
+#Likelihood Normal
+for (i in 1:n) {	
+	y[i] ~ dnorm(mu[i],tau)
+	logit(mu[i])<-beta[1]+beta[2]*x[i,2]+beta[3]*p[i]
+	x[i,3] ~ dnorm(p[i], tau.p)
+	p[i]<-alpha*x[i,1]
+	}
+#------------
+#Priors 
+tau ~ dgamma(0.001,0.001)
+tau.p ~ dgamma(0.001,0.001)
+for (j in 1:3) { beta[j] ~ dnorm(0,0.001) }
+alpha ~ dnorm(0,0.001)
+#------------
+#Prediction 
+for (i in 1:n) { 
+	yf[i] ~ dnorm(mu[i],tau)
+	pf[i] ~ dnorm(p[i], tau.p)
+	}
+}
+
+

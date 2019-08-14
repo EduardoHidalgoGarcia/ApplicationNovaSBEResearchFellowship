@@ -1,0 +1,888 @@
+---
+title: "Examen Parcial"
+author: 
+  - Jose C. Escobar 175895
+  - Eduardo Hidalgo 117036
+  - Rene Rosado 137084
+date: "October 27, 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+#--- Usar espejo CRAN del ITAM ---
+knitr::opts_chunk$set(echo = TRUE)
+options(repos="http://cran.itam.mx/")
+library(corrplot)
+library(R2OpenBUGS)
+library(R2jags)
+library(lubridate)
+library(tidyverse)
+library(gridExtra)
+library(grid)
+library(ggplot2)
+library(lattice)
+setwd("~/Documents/modelos lineales generalizados/final2018/final_last")
+
+#-Reading data-
+teledensidad = readxl::read_excel('TELEDENSIDAD_IFT-1.xlsx')
+
+#--- Funciones utiles ---
+prob<-function(x){
+  out<-min(length(x[x>0])/length(x),length(x[x<0])/length(x))
+  out
+}
+
+printf <- function(...) invisible(print(sprintf(...)))
+```
+
+# Definición del problema
+
+En el estudio de mercados, desde la óptica de las ciencias económicas, resulta útil caracterizar la demanda. Para los órganos reguladores y autoridades de competencia, resulta de particular interés conocer la sensibilidad de la demanda ante cambios en el ingreso de los consumidores, o ante cambios en el precio de los productos y servicios. A estos fenómenos se les conoce como elasticidad ingreso y elasticidad precio respectivamente.
+
+Se dice que un bien o servicio es ordinario si su elasticidad precio es negativa, es decir, que ante un aumento en el su precio su demanda disminuye. Por otro lado, se considera un bien ‘Giffen’, es decir, que un movimiento en el precio del bien o servicio será seguido por un movimiento en el mismo sentido de su demanda. Si el ingreso del consumidor aumenta, se dice que un bien o servicio es inferior si la demanda de este disminuye; el caso contrario, cuando aumenta el consumo al aumentar el ingreso, se dice que se trata de un bien normal.
+
+Una técnica frecuentemente utilizada para estimar la demanda es el uso de los modelos estructurales de elección discreta desarrollada por McFadden (1973; 1978; 1980; 1981). Estos modelos buscan predecir la probabilidad de elección de los agentes por una alternativa dentro de un conjunto finito. Además, permiten determinar la influencia relativa de los diferentes atributos de las alternativas y las características de los tomadores de decisiones, así como derivar las elasticidades de la demanda. 
+
+Parten del supuesto de una función de utilidad de los consumidores maximizadores de beneficios sujetos a una restricción presupuesta. La utilidad que se obtiene de consumir un producto depende de sus características y no del producto en sí mismo. Cada consumidor elige como máximo una unidad; sin embargo, sólo es posible conocer las cuotas de mercado y no las decisiones individuales.
+
+El Instituto Federal de Telecomunicaciones (IFT) cuenta con la serie histórica trimestral del índice de precios de telefonía móvil y la tasa de teledensidad (líneas de telefonía móvil por cada 100 habitantes) a nivel nacional, para 22 periodos a partir del primer trimestre de 2013. Concatenando esta base con información del PIB percápita del INEGI 
+
+
+
+
+
+```{r database,echo=FALSE,warning=FALSE,message=FALSE}
+#mercado.ts<-ts(mercado,start=c(1990,1),end=c(1991,52),frequency=52)
+teledensidad.ts<-ts(teledensidad%>%select(TELEDENSIDAD,PRECIO,PIBPERCAPITA,LAG_PRECIO),start=c(2013,1),end=c(2018,2),frequency=4)
+teledensidad$Fecha<-paste0(teledensidad$Año,"/",teledensidad$Q)
+fortabes<-teledensidad%>%select(Fecha,Año,Q,TELEDENSIDAD,PIBPERCAPITA,PRECIO,LAG_PRECIO)
+fortabes$IHH<-format(fortabes$IHH,digits=2,big.mark=",",scientific=FALSE)
+fortabes$TELEDENSIDAD<-format(fortabes$TELEDENSIDAD,digits=2,big.mark=",",scientific=FALSE)
+fortabes$PIB<-format(fortabes$PIB,digits=2,big.mark=",",scientific=FALSE)
+fortabes$PRECIO<-format(fortabes$PRECIO,digits=2,big.mark=",",scientific=FALSE)
+fortabes$LINEAS<-format(fortabes$LINEAS,digits=2,big.mark=",",scientific=FALSE)
+fortabes$POB<-format(fortabes$POB,digits=2,big.mark=",",scientific=FALSE)
+fortabes$PIBPERCAPITA<-format(fortabes$PIBPERCAPITA,digits=2,big.mark=",",scientific=FALSE)
+fortabes$MINUTOS<-format(fortabes$MINUTOS,digits=2,big.mark=",",scientific=FALSE)
+fortabes$LAG_PRECIO<-format(fortabes$LAG_PRECIO,digits=2,big.mark=",",scientific=FALSE)
+
+knitr::kable(fortabes%>%select(Año,Q,TELEDENSIDAD,PIBPERCAPITA,PRECIO,LAG_PRECIO)%>%head(), caption = "Base de datos")
+
+
+```
+
+La base contiene observaciones de 2013 a 2017 por trimestre para el periodo que abarca del primer trimestre 2013 al segundo trimestre 2018.
+
+# Analisis Exploratorio
+
+En esta sección se describe la base de datos y se realiza una Análisis Exploratorio de la Base de Datos (EDA).
+
+La tasa de teledensidad de telefonía móvil mide el número de líneas activas por cada 100 habitantes. Esta presenta una mediana 89 líneas por cada 100 habitantes, alcanzando un mínimo de 84 líneas por cada 100 habitantes el segundo trimestre de 2014, y un máximo de 93 líneas por cada 100 habitantes durante los dos primeros trimestres de 2018. 
+
+Por su parte el PIB per cápita es un indicador utilizado frecuentemente para aproximar la riqueza de una economía. Su cálculo consiste en la división del Producto Interno Bruto entre la población total estimada. La serie disponible en la base de datos  ha presentado una tendencia creciente, alcanzando un mínimo de 136,673 pesos durante el segundo trimestre de 2013, y un máximo de 149,239 pesos durante el primer trimestre de 2018. 
+
+El Índice de Precios de Telefonía Móvil es un indicador construido por el INEGI el cual contempla el cambio promedio del precio, tanto implícito como explícito, en los servicios de la telefonía móvil, tanto de planes de prepago como de post-pago, con cobertura nacional. A partir del primer trimestre de 2013 a la fecha, este índice ha mostrado una tendencia decreciente, presentando su máximo (119.08 pts) durante el primer trimestre de 2013 y su mínimo  (59.96 pts)  durante el segundo trimestre de 2018.
+
+
+
+```{r 1.A,echo=FALSE,warning=FALSE,message=FALSE}
+fortabes<-teledensidad%>%select(Fecha,IHH,TELEDENSIDAD,PIB,PRECIO,LINEAS,POB,PIBPERCAPITA,MINUTOS,LAG_PRECIO)
+knitr::kable(summary(teledensidad%>%select(Año,Q,TELEDENSIDAD,PIBPERCAPITA,PRECIO,LAG_PRECIO)), caption = "Resumen de los datos")
+
+
+```
+
+
+
+
+
+## Evolución de las variables
+
+```{r EDA_Univariado,echo=FALSE}
+teledensidad$Fecha<-paste0(teledensidad$Año,"/",teledensidad$Q)
+teledensidad$Fecha<-yq(teledensidad$Fecha)
+a<-ggplot(teledensidad) +
+  geom_point(aes(x=Fecha,y=PIBPERCAPITA),color="Red", size = 2,shape=23) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("PIB prom")  +scale_y_continuous(label = scales::unit_format(unit = "k", scale = 1e-3))+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold")) #+#+
+  #ggtitle("Evolución del Ingreso")+scale_y_continuous(labels = scales::comma)
+c<-ggplot(teledensidad) +
+  geom_point(aes(x=Fecha,y=TELEDENSIDAD),color="forestgreen", size = 2,shape=23) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("Densidad")+scale_y_continuous(labels = scales::comma)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold")) #+ #+
+  #ggtitle("Evolución del la densidad de televisores")+scale_y_continuous(labels = scales::comma)
+e<-ggplot(teledensidad) +
+  geom_point(aes(x=Fecha,y=PRECIO),color="gold1", size = 2,shape=23) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("Precio") +scale_y_continuous(labels = scales::comma)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold")) #+#+
+  #ggtitle("Evolución del Precio")+scale_y_continuous(labels = scales::comma)
+h<-ggplot(teledensidad) +
+  geom_point(aes(x=Fecha,y=LAG_PRECIO),color="orange", size = 2,shape=23) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("Precio Q[-4]") +scale_y_continuous(label = scales::unit_format(unit = "b", scale = 1e-9))+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))#+
+  #ggtitle("Evolución del numero de minutos")+scale_y_continuous(labels = scales::comma)
+
+title=textGrob("Evolución de las variables en la base",gp=gpar(fontsize=10,font=3))
+grid.arrange(c,a,e,h,ncol=2,top=title)
+```
+
+Dada la evolución histórica que han tenido estas variables, se puede observar que el índice de precios de telefonía móvil y el PIB per cápita se encuentran altamente correlacionadas. Sin embargo, esto no necesariamente representa una relación de causalidad. 
+
+
+## Interacción entre variables
+
+```{r correlacion,echo=FALSE}
+corrplot(cor(teledensidad.ts), order = "hclust", tl.col='black', tl.cex=.75)
+```
+
+
+En este trabajo, desarrollamos un método bayesiano para abordar el desafío computacional de estimar modelos de demanda y oferta simultáneos que se pueden aplicar a tanto el análisis de datos comunes como los datos agregados.
+El método se desarrolla dentro del contexto de un modelo heterogéneo de elección discreta junto con indicadores como el PIB per Cápita y el Precio, aplicadas a un conjunto de datos de Teledensidad. Nuestro análisis indica que incorporando la heterogeneidad en el modelo de demanda, pero eliminando el sesgo en el parámetro de precio debido a la
+endogeneidad del precio. El análisis también apoya el uso de un análisis completo de la información
+
+# El Modelo
+
+El modelo de elección parte del supuesto de una función de utilidad de los consumidores maximizadores de beneficios sujetos a una restricción presupuesta. La utilidad que se obtiene de consumir un producto depende de sus características y no del producto en sí mismo. Cada consumidor elige como máximo una unidad; sin embargo, sólo es posible conocer las cuotas de mercado y no las decisiones individuales.
+
+En sentido, se utiliza la variable teledensidad, para estimar la demanda por servicios de telefonia movil
+
+El modelo que se utiliza para la estimación de dicha demanda, se presenta a continuación:
+
+$$\textbf{Ecuación de Estado: } \space \space \space Teledensidad_{t} \sim N_{M}(\mu_{t},\tau) $$
+
+El modelo asume la `media de la teledensidad` como una liga logística:
+
+$$logit(\mu_{t})= \beta_{1,t} + \beta_{2,t} PIBXCapita + \beta_{3,t} P_{t}, \space t \in \left \{ 2011q1,2011q2,...,2018q1,2018q2 \right \}$$
+
+De la ecuación para la media se tiene que $\beta_{1,t}$ refleja las característica no observables del producto y las preferencias idiosincráticas de los consumidores. Por su parte, $\beta_{2,t}$ captura la evolución en el ingreso de los consumidores. Por último, $\beta_{3,t}$ captura el efecto sobre la media de la demanda por telefonia movil del precio.
+
+Y, se adiciona al modelo una ecuación del tipo `AR(1)`para el nivel de precio:
+
+$$P_{t}=\alpha P_{t-1}, \space t \in \left \{ 2011q1,2011q2,...,2018q1,2018q2 \right \}$$
+
+
+
+
+$$\textbf{Ecuacion de Evolucion : } \space \space \space \beta_{t} = C_{i} \beta_{t-1} + \epsilon_{i}; \space \omega \sim N(0,\tau_{\beta_{i}}); \textit{ con }i \in \left \{ 1,2,3  \right \} $$
+
+
+Por otro lado, la especificación de la media bajo la liga logit permite modelar a la demanda por telefonia movil (`TELEDENSIDAD`), bajo la alternativa de no consumo (o consumir un bien exterior). Este enfoque permite que los consumidores no sean forzados a comprar el bien o servicio. Por lo que, la respuesta del consumo ante cambios en los precios. Así, la probabilidad de que el consumidor $j$ decida  comprar el bien está dada por:
+
+$$\mu_{j,t}=\frac{exp(\beta_{1,t} + \beta_{2,t} PIBXCapita + \beta_{3,t} P_{t})}{(1+exp(\beta_{1,t} + \beta_{2,t} PIBXCapita + \beta_{3,t} P_{t}))}$$
+
+
+De este modo, es posible estimar un modelo para la media de la demanda por telecomunicaciones mediante el uso de la liga logística con variable dependiente la cuota de mercado (en nuestro caso estimado mediante la `TELEDENSIDAD`), y como variables explicativas el ingreso de los consumidores (`PIBPERCAPITA`), el precio (`PRECIO`)y las características no observadas del producto. 
+
+En la siguiente sección presentamos el mismo modelo, pero, se ignora la dependencia temporal de las variables. El objetivo es comparar la estacidad (Yurekli,Ayda & Perucic, Anne-Marie,p. 43, 2010) de la demanda por servicios de telefonia móvil, en el modelo dinámico v.s. los resultados del modelo estático.
+
+# Modelo Estatico
+
+La especificación del modelo estático:
+
+$$Teledensidad_{t} \sim N_{M}(\mu,\tau) $$
+
+$$logit(\mu)= \beta_{1} + \beta_{2} PIBXCapita + \beta_{3} P_{t}$$
+Y, se adiciona al modelo una ecuación del tipo `AR(1)`para el nivel de precio:
+
+$$P_{t}=\alpha P_{t-4}, \space t \in \left \{ 2013q1,2013q2,...,2018q1,2018q2 \right \}  $$
+
+
+```{r Bmodelo,echo=FALSE,message=FALSE,warning=FALSE,results=FALSE}
+
+#CODIGO BUGS
+n = nrow(teledensidad)
+
+x = as.matrix(teledensidad[c(11,9,6)])
+#cor(x)
+#-Defining data-
+#LEVEL
+#data = list("n"     = n,
+#            "y"     = teledensidad$TELEDENSIDAD,
+#            "x"     = x)
+#Standarized
+data = list("n"     = n,
+            "y"     = teledensidad$TELEDENSIDAD/100,
+            "x"     = scale(x)[1:n,])
+
+#Log
+#data = list("n"     = n,
+#            "y"     = log(teledensidad$TELEDENSIDAD/(100-teledensidad$TELEDENSIDAD)),
+#            "x"     = log(x))
+
+#-Inits Estatico-
+inits=function(){list(beta  = rep(0, 3), 
+                      tau   = 1,
+                      alpha = 0,
+                      tau.p = 1,
+                      pf    = rep(1,n),
+                      yf    = rep(1,n))}
+
+#-Inits Din?mico-
+#inits<-function(){list(alpha = 0,
+#                       beta  = matrix(0, nrow=3, ncol=n),
+#                       tau   = 1,
+#                       tau.p = 1,
+#                       tau.b = 1,
+#                       yf    = rep(1,n),
+#                       pf    = rep(1,n))}
+
+
+#-Selecting parameters to monitor
+parameters<-c("beta","yf", "alpha", "pf", "tau.p")
+
+start = Sys.time()
+
+iter=20000
+burned=2000
+numchain=2
+final.bugs.sim = bugs(data,inits,parameters,model.file="F.estatico.txt",
+                       n.iter=iter,n.chains=numchain,n.burnin=burned)
+
+end = Sys.time()
+
+#end - start
+#BUGS
+out= final.bugs.sim$sims.list
+
+
+
+```
+
+
+```{r MonitorChaneEstatico,echo=FALSE,warning=FALSE}
+
+
+
+Alpha<-out$alpha%>%as.data.frame()
+colnames(Alpha)[1]<-"Alpha"
+
+
+Beta_1<-out$beta[,1]%>%as.data.frame()
+colnames(Beta_1)[1]<-"Beta_1"
+
+Beta_2<-out$beta[,2]%>%as.data.frame()
+colnames(Beta_2)[1]<-"Beta_2"
+
+Beta_3<-out$beta[,3]%>%as.data.frame()
+colnames(Beta_3)[1]<-"Beta_3"
+
+
+coefsumm<-cbind(Alpha,Beta_1,Beta_2,Beta_3)
+
+#Nivel Promedio temporal de Precio
+a<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=Alpha),color="darkorange4", size = .35) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("Alpha")  + geom_hline(yintercept=mean(coefsumm$Alpha), linetype="dashed", color = "black")+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+  #ggtitle("Evolución del Ingreso")
+#media de teledensidad
+b<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=Beta_1),color="peru", size = .35) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("Beta 1")+ geom_hline(yintercept=mean(coefsumm$Beta_1), linetype="dashed", color = "black")+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+#PIB per Capita /INGRESO
+c<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=Beta_2),color="gold1", size = .35) +
+  theme_minimal() + 
+  xlab("Iteraciones") + 
+  ylab("Beta 2")  + geom_hline(yintercept=mean(coefsumm$Beta_2), linetype="dashed", color = "black")+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+#Precio
+d<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=Beta_3),color="darkorange", size = .35) +
+  theme_minimal() + 
+  xlab("Iteraciones") + 
+  ylab("Beta 3")  + geom_hline(yintercept=mean(coefsumm$Beta_3), linetype="dashed", color = "black")+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+
+title=textGrob("Monitoreo de la cadena de los parametros estimados",gp=gpar(fontsize=10,font=3))
+grid.arrange(b,c,d,ncol=1,top =title )
+```
+
+
+Convergencia
+
+```{r monitoreandolacadenaestatico,echo=FALSE,message=FALSE,warning=FALSE,results='hide',fig.keep='all'}
+
+#Nivel Promedio precio
+a<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=cumsum(coefsumm$Alpha)/(1:length(coefsumm$Alpha))),color="darkorange4", size = .35) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("Alpha")  + geom_hline(yintercept=mean(coefsumm$Alpha), linetype="dashed", color = "black",size=.20)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+  #ggtitle("Evolución del Ingreso")
+#media de teledensidad
+b<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=cumsum(coefsumm$Beta_1)/(1:length(coefsumm$Beta_1))),color="peru", size = .35) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("Beta 1")+ geom_hline(yintercept=mean(coefsumm$Beta_1), linetype="dashed", color = "black",size=.20)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+#PIB per Capita
+c<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=cumsum(coefsumm$Beta_2)/(1:length(coefsumm$Beta_2))),color="gold1", size = .35) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("Beta 2")  + geom_hline(yintercept=mean(coefsumm$Beta_2), linetype="dashed", color = "black",size=.20)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+#Precio
+d<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=cumsum(coefsumm$Beta_3)/(1:length(coefsumm$Beta_3))),color="darkorange", size = .35) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("Beta 3")  + geom_hline(yintercept=mean(coefsumm$Beta_3), linetype="dashed", color = "black",size=.20)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+
+
+
+title=textGrob("Monitoreo de la convergencia en la cadena de los parametros estimados",gp=gpar(fontsize=10,font=3))
+grid.arrange(b,c,d,ncol=1,top =title )
+
+```
+
+Histograma
+
+```{r geomhistestatico,echo=FALSE,message=FALSE,warning=FALSE,results='hide',fig.keep='all'}
+#hist(Beta_1,freq=FALSE)
+
+#Precio Promedio
+a<-ggplot(coefsumm,aes(Alpha)) +
+  geom_histogram(fill="darkorange4") +
+  theme_minimal() + 
+  xlab("Alpha") + 
+  ylab("Repeticiones") + geom_vline(xintercept=mean(coefsumm$Alpha), linetype="dashed", color = "black",size=.5)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+  #ggtitle("Evolución del Ingreso")
+#Nivel medio de teledensidad
+b<-ggplot(coefsumm,aes(Beta_1)) +
+  geom_histogram(fill="peru") +
+  theme_minimal() + 
+  xlab("Beta 1") + 
+  ylab("Repeticiones")+ geom_vline(xintercept=mean(coefsumm$Beta_1), linetype="dashed", color = "black",size=.5)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+#PIB X Capita
+c<-ggplot(coefsumm,aes(Beta_2)) +
+  geom_histogram(fill="gold1") +
+  theme_minimal() + 
+  xlab("Beta 2") + 
+  ylab("Repeticiones")  + geom_vline(xintercept=mean(coefsumm$Beta_2), linetype="dashed", color = "black",size=.5)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+#Precio
+d<-ggplot(coefsumm,aes(Beta_3)) +
+  geom_histogram(fill="darkorange") +
+  theme_minimal() + 
+  xlab("Beta 3") + 
+  ylab("Repeticiones")  + geom_vline(xintercept=mean(coefsumm$Beta_3), linetype="dashed", color = "black",size=.5)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+title=textGrob("Histograma de la cadena de los parametros estimados",gp=gpar(fontsize=10,font=3))
+grid.arrange(b,c,d,ncol=1,top =title )
+
+```
+
+
+
+Dadas las diferentes escalas de medición de las variables, se optó por utilizar la versión estandarizada de las variables. 
+
+
+
+```{r TablaResumen_1,echo=FALSE,warning=FALSE}
+#Resumen (estimadores)
+#OpenBUGS
+out.sum<-final.bugs.sim$summary
+
+#Tabla resumen
+out.sum.t<-out.sum[grep("beta",rownames(out.sum)),c(1,3,7)]
+out.sum.t<-cbind(out.sum.t,apply(out$beta,2,prob))
+dimnames(out.sum.t)[[2]][4]<-"prob"
+
+
+knitr::kable(out.sum.t, caption = "Parametros del modelo estatico")
+```
+
+
+Los resultados sugieren que , con un 95% de probabilidad, el valor del coeficiente $\beta_{1}$ asociado a las características del producto (las cuales no son observadas), es significativo y estará entre 2.00 y 2.17. Por otro lado, el valor del coeficiente $\beta_{2}$ asociado al efecto del PIB per cápita(ingreso) no es significativamente diferente de cero. Por último, el valor del coeficiente $\beta_{3}$ asociado al nivel del índice de precios, es significativo y se sitúa entre -0.50 y -0.03.
+
+
+
+
+```{r BBondad,echo=FALSE,warning=FALSE,message=FALSE}
+#DIC
+DIC<-final.bugs.sim$DIC
+
+#Pseudo R
+aux<-out.sum[grep("yf",rownames(out.sum)),1]%>%as.data.frame()
+colnames(aux)[1]<-c("ygorro")
+PseudoR<-(cor(teledensidad$TELEDENSIDAD/100,aux$ygorro))^2
+
+
+BondadAjusteLigaLogit<-data.frame(PseudoR,DIC)
+knitr::kable(BondadAjusteLigaLogit, caption = "Resumen de Medidas de Bondad de Ajuste: Modelo Estatico",row.names = FALSE)
+```
+
+
+```{r GraficadeTeledensidadEstiamdavsRealizada,echo=FALSE}
+aux<-out.sum[grep("yf",rownames(out.sum)),c(1,3,7)]%>%as.data.frame()
+colnames(aux)[1]<-c("ygorro")
+baseresultado<-cbind(teledensidad%>%transmute(TeledensidadObs=TELEDENSIDAD/100,Fecha),aux%>%select(ygorro,`2.5%`,`97.5%`))
+
+
+
+  
+ggplot(baseresultado) + 
+  geom_line(aes(x = Fecha, y = TeledensidadObs),size = 1,color="darkorange4") + 
+  geom_line(aes(x = Fecha, y = ygorro),size = 1,color="darkorange") + 
+  geom_line(aes(x = Fecha, y = `2.5%` ), col = 'red', lty = 2, size = .5) +
+  geom_line(aes(x = Fecha, y = `97.5%`), col = 'red', lty = 2, size = .5) +
+  theme_bw()+ ggtitle(expression(atop("Comparación Observada (cafe) vs.  Estimada (naranja)", atop(italic("Teledensidad en Modelo Estático "), ""))))+ylab("Teledensidad")
+
+```
+
+
+En este contexto resulta sencillo calcular la probabilidad marginal asociada a las variables, es decir, tomar la primer derivada de la media, modelada bajo la liga logística, de la variable dependiente respecto a la variable de interés (precio e ingreso).  En el contexto económico, esto es equivalente al cálculo de la elasticidad con respecto al precio y al ingreso. Pues, se puede demostrar que (Yurekli,Ayda & Perucic, Anne-Marie,p. 43-44, 2010) :
+
+$$\frac{\partial E(Teledensidad|X;\vec{\beta_{i}})}{\partial PRECIO} \frac{PRECIO}{E(Teledensidad|X;\vec{\beta_{i}})}=\textit{Elasticidad Precio}$$ 
+
+
+
+$$\Rightarrow \textit{Elasticidad Precio}=\beta_{3}Precio(1-E(Teledensidad|X; \vec{\beta_{i}}))$$
+
+
+$$\frac{\partial E(Teledensidad|X;\vec{\beta_{i}})}{\partial PIBXCAPITA} \frac{PIBXCAPITA}{E(Teledensidad|X;\vec{\beta_{i}})}=\textit{Elasticidad Ingreso}$$ 
+
+
+
+$$\Rightarrow \textit{Elasticidad Ingreso}=\beta_{2}PIBperCapita \space (1-E(Teledensidad|X,\vec{\beta})$$
+
+Donde asumimos que: $$INGRESO \equiv PIBXCAPITA$$
+
+Al graficar las elasticidades precio e ingreso utilizando los datos observados, se puede observar que, en el caso de la elasticidad precio, existen cambios en el rango del intervalo a través del tiempo. Considerando esto, se decidió utilizar un modelo dinámico que permita considerar este hecho.
+
+```{r ElasticidadPrecioModeloEstatico,echo=FALSE,warning=FALSE}
+
+eestat = data.frame('mean' = out.sum.t[3,1]*(1-data$y)*teledensidad$PRECIO,
+                    '2.5%' = out.sum.t[3,2]*(1-data$y)*teledensidad$PRECIO,
+                    '97.5%'= out.sum.t[3,3]*(1-data$y)*teledensidad$PRECIO,
+                    'Q'    = teledensidad$Fecha)
+
+
+
+a = ggplot(eestat,(aes(x = Q, y = mean))) + 
+  geom_line(size = .5) + 
+  labs(x = 'Año', y = 'Elasticidad Precio') +
+  theme_bw()
+
+b = ggplot(eestat,(aes(x = Q, y = mean))) + 
+  geom_line(size = .5) + 
+  geom_line(aes(x = Q, y = X2.5. ), col = 'red', lty = 2, size = .25) +
+  geom_line(aes(x = Q, y = X97.5.), col = 'red', lty = 2, size = .25) + 
+  labs(x = 'Año', y = 'Elasticidad Precio') +
+  geom_hline(yintercept = 0, lty = 3) +
+  theme_bw()
+
+iestat = data.frame('mean' = out.sum.t[2,1]*(1-data$y)*teledensidad$PRECIO,
+                    '2.5%' = out.sum.t[2,2]*(1-data$y)*teledensidad$PRECIO,
+                    '97.5%'= out.sum.t[2,3]*(1-data$y)*teledensidad$PRECIO,
+                    'Q'    = teledensidad$Fecha)
+
+c = ggplot(iestat,(aes(x = Q, y = mean))) + 
+  geom_line(size = .5) + 
+  labs(x = 'Año', y = 'Elasticidad Ingreso') +
+  geom_hline(yintercept = 0, lty = 3) +
+  theme_bw()
+
+d = ggplot(iestat,(aes(x = Q, y = mean))) + 
+  geom_line(size = .5) + 
+  geom_line(aes(x = Q, y = X2.5. ), col = 'red', lty = 2, size = .25) +
+  geom_line(aes(x = Q, y = X97.5.), col = 'red', lty = 2, size = .25) + 
+  geom_hline(yintercept = 0, lty = 3) +
+  labs(x = 'Año', y = 'Elasticidad Ingreso') +
+  theme_bw()
+
+
+title=textGrob("Analisis de las elasticidades bajo el enfoque estatico",gp=gpar(fontsize=10,font=3))
+grid.arrange(a, b, c, d,top=title)
+
+
+```
+
+
+```{r,echo=FALSE}
+knitr::kable(eestat%>%group_by()%>%summarise(`Elasticidad Promedio`=mean(`mean`),`2.5% Promedio`=mean(`X2.5.`),`97.5% Promedio`=mean(`X97.5.`)), caption = "Resumen de Elasticidade Precio Telefonia Mobil : Modelo Estatico",row.names = FALSE)
+```
+
+
+La elasticidad precio, es decir, el cambio porcentual en la probabilidad de consumo a raíz de un incremento porcentual en el precio será de entre el $-3.5\%$ y el $-1\%$. Siendo el valor medio de $-2.1\%$. Esto sugiere que el servicio de telefonía móvil es un servicio ordinario, sin embargo, considerando la amplitud del intervalo de probabilidad, podemos decir que, dado todo lo que no podemos observar, existen consumidores que consideran que son más sensibles al precio que otros. 
+
+```{r,echo=FALSE}
+knitr::kable(iestat%>%group_by()%>%summarise(`Elasticidad Promedio`=mean(`mean`),`2.5% Promedio`=mean(`X2.5.`),`97.5% Promedio`=mean(`X97.5.`)), caption = "Resumen de Elasticidade Ingreso Telefonia Mobil : Modelo Estatico",row.names = FALSE)
+```
+
+Por otro lado, dado que el coeficiente del pib percapita no resultó significativo, la elasticidad asociada tambopo arroja un rango entre $-1.26\%$ y  $1.45\%$.
+
+
+
+
+
+# Modelo Dinámico
+
+A continuación se presentan los resultados del modelo presentado dinamico presentado al inicio del texto.
+
+```{r ModeloDinamico1,echo=FALSE,warning=FALSE,message=FALSE}
+#Datos del Modelo Dinamico
+#-Defining data-
+x = as.matrix(teledensidad[c(11,9,6)])
+
+#Standarized
+data = list("n"     = n,
+            "y"     = teledensidad$TELEDENSIDAD/100,
+            "x"     = scale(x)[1:n,])
+
+inits<-function(){list(alpha = 0,
+                       beta  = matrix(0, nrow=3, ncol=n),
+                       tau   = 1,
+                       lam   = 1,
+                       tau.p = 1,
+                       yf    = rep(1,n),
+                       pf    = rep(1,n))}
+
+parameters<-c("beta","yf", "alpha", "pf", "lam")
+
+#-- Simulaci?n
+start = Sys.time()
+
+iter=20000
+burned=2000
+numchain=2
+dinam.sim <- bugs(data,inits,parameters,model.file="F.dinamico.txt",
+                      n.iter=iter,n.chains=numchain,n.burnin=burned)
+#dinam.sim<-jags(data,inits,parameters,model.file="F.dinamico.txt",
+#               n.iter=iter,n.chains=numchain,n.burnin=burned,n.thin=1)
+end = Sys.time()
+
+#end - start
+
+#BUGS
+out <- dinam.sim$sims.list
+```
+
+
+
+
+Al observar los resultados, se puede apreciar que, con un 90% de probabilidad , los coeficientes resultan significativamente distintos de cero. En el caso de las constantes $\beta_{1}$  se observa que el efecto, que nosotros asociamos a las características se centra entre el 1.83 y 2.22. En la evolución de la media se observa una tendencia negativa hasta el primer trimestre de 2015 donde hay un punto de inflexión. En este patrón se repite en los coeficientes asociados al precio. Un posible explicación pudiera ser el efecto de la eliminación del cobro de llamadas de larga distancia nacional, a Canadá y Estados Unidos implementada a partir del mismo periodo. En el caso de los coeficientes de los precios, hay un nuevo punto de inflexión a partir del último trimestre de 2017. No se encontró una explicación que pudiera sugerir el cambio en el efecto del precio directamente, pero se puede recabar mayor información sobre la oferta disponible (inclusión de redes sociales, mayor velocidad de navegación, mayor cobertura, etc.) . Lo que resulta relevante, es que en el modelo dinámico, el efecto del ingreso es significativo y presenta una tendencia incremental a tasas decrecientes. A partir del primer trimestre de 2015, la cota inferior del intervalo de estos coeficientes es estrictamente positiva.
+
+
+
+Los coeficientes estimados se resumen en la siguiente tabla. Recordemos que estos se interpretan como el efecto sobre logaritmo de los momios, es decir, cuántas veces más probable es que una persona decida consumir el servicio de telefonía móvil dado un incremento en la variable explicativa.
+
+
+```{r TablResumen2,echo=FALSE,warning=FALSE}
+#Resumen (estimadores)
+#OpenBUGS
+out.sum<-dinam.sim$summary
+
+
+#Tabla resumen
+out.sum.t<-out.sum[grep("beta",rownames(out.sum)),c(1,3,7)]
+out.sum.t<-cbind(out.sum.t,apply(out$beta,2,prob))
+dimnames(out.sum.t)[[2]][4]<-"prob"
+#print(out.sum.t)
+betasdin<-rownames(out.sum.t)%>%as.data.frame()
+colnames(betasdin)[1]<-"Beta"
+betasdin<-cbind(out.sum.t,betasdin)
+betasdin$`Promedio de Beta`<-paste0(substr(betasdin$`Beta`,1,6),"]")
+meanbetasdin<-betasdin%>%as.data.frame()%>%group_by(`Promedio de Beta`)%>%summarise(`Mean of Mean`=mean(`mean`),`Mean of 2.5%`=mean(`2.5%`),`Mean of 97.5%`=mean(`97.5%`),`Mean of Prob`=mean(`prob`))
+knitr::kable(meanbetasdin, caption = "Parametros del modelo dinamico")
+
+
+```
+
+```{r MonitorChaneDInamico,echo=FALSE,warning=FALSE}
+
+
+
+Alpha<-out$alpha%>%as.data.frame()
+colnames(Alpha)[1]<-"Alpha"
+
+
+Beta_1<-out$beta[,1,1]%>%as.data.frame()
+colnames(Beta_1)[1]<-"Beta_1"
+
+Beta_2<-out$beta[,1,2]%>%as.data.frame()
+colnames(Beta_2)[1]<-"Beta_2"
+
+Beta_3<-out$beta[,1,3]%>%as.data.frame()
+colnames(Beta_3)[1]<-"Beta_3"
+
+
+coefsumm<-cbind(Alpha,Beta_1,Beta_2,Beta_3)
+
+#Nivel Promedio temporal de Precio
+a<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=Alpha),color="darkorange4", size = .35) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("Alpha")  + geom_hline(yintercept=mean(coefsumm$Alpha), linetype="dashed", color = "black")+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+  #ggtitle("Evolución del Ingreso")
+#media de teledensidad
+b<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=Beta_1),color="peru", size = .35) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("Beta 1")+ geom_hline(yintercept=mean(coefsumm$Beta_1), linetype="dashed", color = "black")+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+#PIB per Capita /INGRESO
+c<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=Beta_2),color="gold1", size = .35) +
+  theme_minimal() + 
+  xlab("Iteraciones") + 
+  ylab("Beta 2")  + geom_hline(yintercept=mean(coefsumm$Beta_2), linetype="dashed", color = "black")+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+#Precio
+d<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=Beta_3),color="darkorange", size = .35) +
+  theme_minimal() + 
+  xlab("Iteraciones") + 
+  ylab("Beta 3")  + geom_hline(yintercept=mean(coefsumm$Beta_3), linetype="dashed", color = "black")+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+
+title=textGrob("Monitoreo de la cadena de los parametros estimados modelo dinamico",gp=gpar(fontsize=10,font=3))
+grid.arrange(b,c,d,ncol=1,top =title )
+```
+
+
+Convergencia
+
+```{r monitoreandolacadenadinamico,echo=FALSE,message=FALSE,warning=FALSE,results='hide',fig.keep='all'}
+
+#Nivel Promedio precio
+a<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=cumsum(coefsumm$Alpha)/(1:length(coefsumm$Alpha))),color="darkorange4", size = .35) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("Alpha")  + geom_hline(yintercept=mean(coefsumm$Alpha), linetype="dashed", color = "black",size=.20)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+  #ggtitle("Evolución del Ingreso")
+#media de teledensidad
+b<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=cumsum(coefsumm$Beta_1)/(1:length(coefsumm$Beta_1))),color="peru", size = .35) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("Beta 1")+ geom_hline(yintercept=mean(coefsumm$Beta_1), linetype="dashed", color = "black",size=.20)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+#PIB per Capita
+c<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=cumsum(coefsumm$Beta_2)/(1:length(coefsumm$Beta_2))),color="gold1", size = .35) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("Beta 2")  + geom_hline(yintercept=mean(coefsumm$Beta_2), linetype="dashed", color = "black",size=.20)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+#Precio
+d<-ggplot(coefsumm) +
+  geom_line(aes(x=seq(1,(iter-burned)*numchain ),y=cumsum(coefsumm$Beta_3)/(1:length(coefsumm$Beta_3))),color="darkorange", size = .35) +
+  theme_minimal() + 
+  xlab("") + 
+  ylab("Beta 3")  + geom_hline(yintercept=mean(coefsumm$Beta_3), linetype="dashed", color = "black",size=.20)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+
+
+
+title=textGrob("Monitoreo de la convergencia en la cadena de los parametros estimados modelo dinamico",gp=gpar(fontsize=10,font=3))
+grid.arrange(b,c,d,ncol=1,top =title )
+
+```
+
+```{r geomhistcinamico,echo=FALSE,message=FALSE,warning=FALSE,results='hide',fig.keep='all'}
+#hist(Beta_1,freq=FALSE)
+
+#Precio Promedio
+a<-ggplot(coefsumm,aes(Alpha)) +
+  geom_histogram(fill="darkorange4") +
+  theme_minimal() + 
+  xlab("Alpha") + 
+  ylab("Repeticiones") + geom_vline(xintercept=mean(coefsumm$Alpha), linetype="dashed", color = "black",size=.5)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+  #ggtitle("Evolución del Ingreso")
+#Nivel medio de teledensidad
+b<-ggplot(coefsumm,aes(Beta_1)) +
+  geom_histogram(fill="peru") +
+  theme_minimal() + 
+  xlab("Beta 1") + 
+  ylab("Repeticiones")+ geom_vline(xintercept=mean(coefsumm$Beta_1), linetype="dashed", color = "black",size=.5)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+#PIB X Capita
+c<-ggplot(coefsumm,aes(Beta_2)) +
+  geom_histogram(fill="gold1") +
+  theme_minimal() + 
+  xlab("Beta 2") + 
+  ylab("Repeticiones")  + geom_vline(xintercept=mean(coefsumm$Beta_2), linetype="dashed", color = "black",size=.5)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+#Precio
+d<-ggplot(coefsumm,aes(Beta_3)) +
+  geom_histogram(fill="darkorange") +
+  theme_minimal() + 
+  xlab("Beta 3") + 
+  ylab("Repeticiones")  + geom_vline(xintercept=mean(coefsumm$Beta_3), linetype="dashed", color = "black",size=.5)+theme(axis.text=element_text(size=5),
+        axis.title=element_text(size=5,face="bold"))
+title=textGrob("Histograma de la cadena de los parametros estimados modelo dinamico",gp=gpar(fontsize=10,font=3))
+grid.arrange(b,c,d,ncol=1,top =title )
+
+```
+
+```{r BBondadDinamico,echo=FALSE,warning=FALSE,message=FALSE}
+#DIC
+DIC<-dinam.sim$DIC
+
+#Pseudo R
+aux<-out.sum[grep("yf",rownames(out.sum)),1]%>%as.data.frame()
+colnames(aux)[1]<-c("ygorro")
+PseudoR<-(cor(teledensidad$TELEDENSIDAD/100,aux$ygorro))^2
+
+
+BondadAjusteLigaLogit<-data.frame(PseudoR,DIC)
+knitr::kable(BondadAjusteLigaLogit, caption = "Resumen de Medidas de Bondad de Ajuste: Modelo Dinamico",row.names = FALSE)
+```
+
+
+```{r GraficadeTeledensidadEstiamdavsRealizada_1,echo=FALSE}
+aux<-out.sum[grep("yf",rownames(out.sum)),c(1,3,7)]%>%as.data.frame()
+colnames(aux)[1]<-c("ygorro")
+baseresultado<-cbind(teledensidad%>%transmute(TeledensidadObs=TELEDENSIDAD/100,Fecha),aux%>%select(ygorro,`2.5%`,`97.5%`))
+
+
+
+  
+ggplot(baseresultado) + 
+  geom_line(aes(x = Fecha, y = TeledensidadObs),size = 1,color="darkorange4") + 
+  geom_line(aes(x = Fecha, y = ygorro),size = 1,color="darkorange") + 
+  geom_line(aes(x = Fecha, y = `2.5%` ), col = 'red', lty = 2, size = .5) +
+  geom_line(aes(x = Fecha, y = `97.5%`), col = 'red', lty = 2, size = .5) +
+  theme_bw()+ ggtitle(expression(atop("Comparación Observada (cafe) vs.  Estimada (naranja)", atop(italic("Teledensidad en Modelo Dinamico "), ""))))+ylab("Teledensidad")
+
+```
+
+De este modo, se puede decir que, con un 90% de probabilidad,  ante una mejora porcentual en alguna de las características, la probabilidad de que una persona contrate 
+una línea telefónica aumentó en promedio 0.23%, con un rango entre el 0.20% y el 0.24% a lo largo del tiempo. Por otro lado, la elasticidad precio, es decir, el cambio porcentual en la probabilidad de consumo a raíz de un incremento porcentual en el precio será de entre el 
+-2.53 y el 0.58%. Siendo el cambio medio de -1.16% por cada incremento porcentual en el índice de precios. Esto sugiere que el servicio de telefonía móvil es un servicio ordinario, sin embargo, considerando la amplitud del intervalo de probabilidad, podemos decir que, dado todo lo que no podemos observar, existen consumidores que consideran que son más sensibles al precio que otros. Por otro lado, el efecto marginal del pib per cápita arroja un rango entre -0.19% y 3.66%, con un cambio promedio de 1.42% por cada incremento porcentual en el ingreso. Esto indica que a partir de del primer trimestre de 2015, el servicio de telefonía móvil se volvió necesario para los consumidores.
+
+
+
+
+```{r Monitoreodelacadena_din,echo=FALSE,warning=FALSE}
+edinam <- data.frame('mean' = out.sum.t[45:66,1]*(1-data$y)*teledensidad$PRECIO,
+                    '2.5%' = out.sum.t[45:66,2]*(1-data$y)*teledensidad$PRECIO,
+                    '97.5%'= out.sum.t[45:66,3]*(1-data$y)*teledensidad$PRECIO,
+                    'Q'    = teledensidad$Fecha)
+
+
+
+a <- ggplot(edinam,(aes(x = Q, y = mean))) + 
+  geom_line(size = .5) + 
+  labs(x = 'Año', y = 'Elasticidad Precio') +
+  theme_bw()
+
+b = ggplot(edinam,(aes(x = Q, y = mean))) + 
+  geom_line(size = .5) + 
+  geom_line(aes(x = Q, y = X2.5. ), col = 'red', lty = 2, size = .25) +
+  geom_line(aes(x = Q, y = X97.5.), col = 'red', lty = 2, size = .25) + 
+  labs(x = 'Año', y = 'Elasticidad Precio') +
+  geom_hline(yintercept = 0, lty = 3) +
+  theme_bw()
+
+idinam = data.frame('mean' = out.sum.t[23:44,1]*(1-data$y)*teledensidad$PRECIO,
+                    '2.5%' = out.sum.t[23:44,2]*(1-data$y)*teledensidad$PRECIO,
+                    '97.5%'= out.sum.t[23:44,3]*(1-data$y)*teledensidad$PRECIO,
+                    'Q'    = teledensidad$Fecha)
+
+c <- ggplot(idinam,(aes(x = Q, y = mean))) + 
+  geom_line(size = .5) + 
+  labs(x = 'Año', y = 'Elasticidad Ingreso') +
+  geom_hline(yintercept = 0, lty = 3) +
+  theme_bw()
+
+d <- ggplot(idinam,(aes(x = Q, y = mean))) + 
+  geom_line(size = .5) + 
+  geom_line(aes(x = Q, y = X2.5. ), col = 'red', lty = 2, size = .25) +
+  geom_line(aes(x = Q, y = X97.5.), col = 'red', lty = 2, size = .25) + 
+  geom_hline(yintercept = 0, lty = 3) +
+  labs(x = 'Año', y = 'Elasticidad Ingreso') +
+  theme_bw()
+
+title=textGrob("Analisis de las elasticidades bajo el enfoque dinamico",gp=gpar(fontsize=10,font=3))
+grid.arrange(a, b, c, d,top=title)
+```
+
+
+## Discusiones y Conclusiones
+
+Considerando las limitantes de información, así como los problemas de colinealidad y endogeneidad dentro del modelo, en el presente trabajo se estimó la demanda agregada del servicio de telefonía móvil en México utilizando dos modelos gausianos con liga logística, uno desde la óptica estática y otro desde el enfoque dinámico.  Para ello se utilizó el PIB per cápita como variable proxy del ingreso y el Índice de Precios de Telefonía Móvil como variable símil al precio, instrumentando este último con su rezago del año anterior para corregir los problemas de endogeneidad del modelo.
+
+En ambos casos, con un  90% de probabilidad, el coeficiente asociado al nivel de precios resultó significativo y consistente con la teoría económica. Sin embargo, se aprecia que de omitir el contexto temporal de los datos, la probabilidad marginal de estos coeficientes sobreestima la sensibilidad de la demanda ante cambios en el precio (elasticidad precio).
+
+
+```{r comparacionesestaticodinamcioeprec,echo=FALSE,warning=FALSE}
+e_dinamicoestatico<-cbind(eestat,edinam)
+colnames(e_dinamicoestatico)<-c("mean_est","2.5_est","97.5_est","Q_est","mean_din","2.5_din","97.5_din","Q_din")
+ggplot(e_dinamicoestatico) + 
+  geom_line(aes(x = Q_din, y = mean_est, colour = 'Estatico'),size = .5,color="darkorange4") + 
+  geom_line(aes(x = Q_din, y = mean_din, colour = 'Dinámico'),size = .5,color="darkorange")+
+  scale_colour_manual(values = c("Estatico"="darkorange4", "Dinámico"="darkorange")) + 
+  geom_line(aes(x = Q_din, y = `2.5_est` ), color = 'darkorange4', lty = 2, size = .25) +
+  geom_line(aes(x = Q_din, y = `97.5_est`), color = 'darkorange4', lty = 2, size = .25) +
+  geom_line(aes(x = Q_din, y = `2.5_din` ), color = 'darkorange', lty = 2, size = .25) +
+  geom_line(aes(x = Q_din, y = `97.5_din`), color = 'darkorange', lty = 2, size = .25) +
+  theme_bw()+ ggtitle(expression(atop("Comparación M. Estatico (cafe) vs.  M. Dinamico (naranja)", atop(italic("Elasticidad Precio"), ""))))+ylab("Elasticidad Precio de la Teledensidad")+ xlab("Fecha")
+
+
+```
+
+Por otro lado, en el enfoque estático, con un  90% de probabilidad, el coeficiente asociado al PIB per cápita no resultó significativo; mientras que en el modelo dinámico no sólo es significativo, sino que muestra una tendencia creciente. consistente con la teoría económica. Al evaluar las probabilidades marginales asociadas a este coeficiente, no son distinta de cero; sin embargo, en el modelo dinámico, con un 90% de confianza, a partir del primer trimestre de 2015 la sensibilidad de la demanda al ingreso  (elasticidad ingreso) es positiva y distinta de cero. Esto sugiere que el servicio de telefonía móvil a partir de este periodo se volvió un servicio necesario.
+
+```{r comparacionesestaticodinamcioeingre,echo=FALSE,warning=FALSE}
+i_dinamicoestatico<-cbind(iestat,idinam)
+colnames(i_dinamicoestatico)<-c("mean_est","2.5_est","97.5_est","Q_est","mean_din","2.5_din","97.5_din","Q_din")
+ggplot(i_dinamicoestatico, aes(x = Q_din)) + 
+  geom_line(aes(y = mean_est, colour = 'Estatico'),size = .5,color="darkorange4") + 
+  geom_line(aes(y = mean_din, colour = 'Dinámico'),size = .5,color="darkorange")+
+  geom_line(aes(y = `2.5_est` ), color = 'darkorange4', lty = 2, size = .25) +
+  geom_line(aes(y = `97.5_est`), color = 'darkorange4', lty = 2, size = .25) +
+  geom_line(aes(y = `2.5_din` ), color = 'darkorange', lty = 2, size = .25) +
+  geom_line(aes(y = `97.5_din`), color = 'darkorange', lty = 2, size = .25) +
+  ggtitle(expression(atop("Comparación M. Estatico (cafe) vs.  M. Dinamico (naranja)", atop(italic("Elasticidad Ingreso"), ""))))+
+  ylab("Elasticidad Ingreso de la Teledensidad")+ xlab("Fecha")+
+  theme_bw()+
+  scale_colour_manual("", 
+                      breaks = c("Estatico", "Dinámico"),
+                      values = c("darkorange4", "darkorange"))
+
+
+```
+
+
+
+## Bibliografia 
+
+McFadden, D., 1973. Conditional logit analysis of qualitative choice behaivor. En: Econometric Frontiers. s.l.:New York Academic Press, pp. 105 - 142.
+
+McFadden, D., 1978. Modelling the Choice of Residential Location. En: Spatial Interaction Theory and Planing Models. s.l.:North - Holland, pp. 75 - 96.
+
+McFadden, D., 1980. Econometric models for probabilistic choice among products. Journal of Business, 53(3), pp. 13 - 29.
+
+McFadden, D., 1981. Econometric models for probabilistic choice. Structural analysis of discrete data with econometric applications, Volumen 198272.
+
+World Health Organization. 2010. “Economics of tobacco toolkit: economic analysis of demand using data from the Global Adult Tobacco Survey (GATS).”  WHO Press, World Health Organization, 20 Avenue Appia, 1211 Geneva 27, Switzerland.  [link] http://apps.who.int/iris/bitstream/handle/10665/44409/9789241500166_eng.pdf;jsessionid=DD2856FDBA6E64611388E892A7D736E1?sequence=1
+
+Yang, S., Chen, Y., & Allenby, G. M. (2003). Bayesian analysis of simultaneous demand and supply. Quantitative marketing and economics, 1(3), 251-275.
